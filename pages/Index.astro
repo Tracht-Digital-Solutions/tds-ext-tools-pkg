@@ -1,0 +1,16 @@
+---
+// The /tools-verwaltung page, injected into the host build via the contract's
+// route slot. Hosts the tool-catalog management island (enable / login / premium
+// / price per tool + a manual rebuild).
+import ToolsManage from "../islands/ToolsManage.tsx";
+---
+
+<section class="page page--tools">
+  <h1>Tools</h1>
+  <p class="text-sm opacity-70">
+    Steuere den öffentlichen Tools-Katalog (tools.tracht-digital.de): sichtbar,
+    Login-Pflicht, Premium und Preis je Tool. Änderungen lösen einen Rebuild der
+    Website aus.
+  </p>
+  <ToolsManage client:load />
+</section>

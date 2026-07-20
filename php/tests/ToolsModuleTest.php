@@ -83,6 +83,41 @@ final class ToolsModuleTest extends TestCase
         self::assertSame(503, $res->getStatusCode());
     }
 
+    public function testEntitlementRequiresAuth(): void
+    {
+        $app = $this->app(new FakeUser());
+        $res = $app->handle($this->request('GET', '/tools/entitlement?tool=pdf'));
+        self::assertSame(401, $res->getStatusCode());
+    }
+
+    public function testCheckoutRequiresAuth(): void
+    {
+        $app = $this->app(new FakeUser());
+        $res = $app->handle($this->request('POST', '/tools/checkout', ['tool' => 'pdf']));
+        self::assertSame(401, $res->getStatusCode());
+    }
+
+    public function testWebhookRejectsMissingSecret(): void
+    {
+        // No stripe_webhook_secret configured → 503 before any signature check.
+        $app = $this->app(new FakeUser());
+        $res = $app->handle($this->request('POST', '/tools/stripe-webhook', ['type' => 'checkout.session.completed']));
+        self::assertSame(503, $res->getStatusCode());
+    }
+
+    public function testWebhookVerifierAcceptsValidRejectsTampered(): void
+    {
+        $secret = 'whsec_test';
+        $payload = '{"type":"checkout.session.completed"}';
+        $t = time();
+        $sig = hash_hmac('sha256', $t . '.' . $payload, $secret);
+        $header = "t={$t},v1={$sig}";
+
+        self::assertTrue(\Tds\Ext\Tools\Service\WebhookVerifier::verify($payload, $header, $secret));
+        self::assertFalse(\Tds\Ext\Tools\Service\WebhookVerifier::verify($payload . 'x', $header, $secret));
+        self::assertFalse(\Tds\Ext\Tools\Service\WebhookVerifier::verify($payload, $header, 'wrong'));
+    }
+
     // --- DB-backed (skipped without a real MariaDB/MySQL, per the repo convention) ---
 
     private function pdoOrSkip(): PDO

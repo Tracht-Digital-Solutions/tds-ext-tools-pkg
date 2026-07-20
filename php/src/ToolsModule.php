@@ -8,8 +8,12 @@ use Psr\Container\ContainerInterface;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
+use Tds\Ext\Tools\Domain\EntitlementRepository;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
 use Tds\Ext\Tools\Service\RebuildTrigger;
+use Tds\Ext\Tools\Service\StripeClient;
+use Tds\Ext\Tools\Service\StripeException;
+use Tds\Ext\Tools\Service\WebhookVerifier;
 use Tds\Panel\Contract\AbstractModule;
 use Tds\Panel\Contract\PermissionDef;
 use Tds\Panel\Contract\SettingDef;
@@ -64,6 +68,11 @@ final class ToolsModule extends AbstractModule
             new SettingDef('rebuild_repo', 'Rebuild-Repo (owner/name)', false, 'tools', 'Tracht-Digital-Solutions/tds-tools'),
             new SettingDef('rebuild_workflow', 'Rebuild-Workflow', false, 'tools', 'dev.yml'),
             new SettingDef('rebuild_token', 'Rebuild-Token (GitHub PAT)', true, 'tools'),
+            new SettingDef('stripe_secret_key', 'Stripe Secret Key (Premium)', true, 'tools'),
+            new SettingDef('stripe_webhook_secret', 'Stripe Webhook Secret', true, 'tools'),
+            new SettingDef('currency', 'Währung (Premium)', false, 'tools', 'EUR'),
+            new SettingDef('checkout_success_url', 'Checkout Success-URL', false, 'tools', 'https://tools.tracht-digital.de/'),
+            new SettingDef('checkout_cancel_url', 'Checkout Cancel-URL', false, 'tools', 'https://tools.tracht-digital.de/'),
         ];
     }
 
@@ -72,6 +81,14 @@ final class ToolsModule extends AbstractModule
         $c = $app->getContainer();
         if ($c !== null && !$c->has(ToolConfigRepository::class)) {
             $c->set(ToolConfigRepository::class, static fn ($c) => new ToolConfigRepository($c->get(PDO::class)));
+            $c->set(EntitlementRepository::class, static fn ($c) => new EntitlementRepository($c->get(PDO::class)));
+            $c->set(StripeClient::class, static function ($c): StripeClient {
+                $key = self::store($c)?->getSecret(self::NS, 'stripe_secret_key');
+                if ($key === null || $key === '') {
+                    $key = self::env('STRIPE_SECRET_KEY', '');
+                }
+                return new StripeClient($key);
+            });
         }
 
         // --- Public: the catalog the static site bakes at build time ----------
@@ -139,6 +156,83 @@ final class ToolsModule extends AbstractModule
             $counts = $c->get(ToolConfigRepository::class)->counts();
             $counts['ads'] = self::adsConfig($c)['enabled'];
             return self::json($res, $counts);
+        });
+
+        // --- Premium: entitlement check (login required) ----------------------
+        $app->get('/tools/entitlement', function (Request $req, Response $res) use ($c): Response {
+            $user = $c->get(UserContext::class);
+            if (!$user->isAuthenticated() || $user->userId() === null) {
+                return self::json($res, ['entitled' => false, 'authenticated' => false], 401);
+            }
+            $toolId = (string) ($req->getQueryParams()['tool'] ?? '');
+            if ($toolId === '') {
+                return self::json($res, ['error' => 'tool query param required'], 422);
+            }
+            // Admins can use every premium tool without a purchase.
+            $entitled = $user->isAdmin() || $c->get(EntitlementRepository::class)->isEntitled((int) $user->userId(), $toolId);
+            return self::json($res, ['entitled' => $entitled, 'authenticated' => true]);
+        });
+
+        // --- Premium: start a Stripe Checkout Session (login required) --------
+        $app->post('/tools/checkout', function (Request $req, Response $res) use ($c): Response {
+            $user = $c->get(UserContext::class);
+            if (!$user->isAuthenticated() || $user->userId() === null) {
+                return self::json($res, ['error' => 'Unauthorized'], 401);
+            }
+            $body = (array) $req->getParsedBody();
+            $toolId = (string) ($body['tool'] ?? '');
+            $tool = $toolId === '' ? null : $c->get(ToolConfigRepository::class)->find($toolId);
+            if ($tool === null || !$tool['is_premium'] || $tool['price_cents'] <= 0) {
+                return self::json($res, ['error' => 'Kein kostenpflichtiges Tool.'], 400);
+            }
+            if ($c->get(EntitlementRepository::class)->isEntitled((int) $user->userId(), $toolId)) {
+                return self::json($res, ['error' => 'Bereits freigeschaltet.'], 409);
+            }
+            $client = $c->get(StripeClient::class);
+            if (!$client->isConfigured()) {
+                return self::json($res, ['error' => 'Zahlung nicht konfiguriert.'], 503);
+            }
+            try {
+                $session = $client->createCheckoutSession(
+                    (int) $user->userId(),
+                    $toolId,
+                    $tool['name'],
+                    (int) $tool['price_cents'],
+                    self::setting($c, 'currency', 'TOOLS_CURRENCY', 'EUR'),
+                    self::setting($c, 'checkout_success_url', 'TOOLS_CHECKOUT_SUCCESS_URL', 'https://tools.tracht-digital.de/'),
+                    self::setting($c, 'checkout_cancel_url', 'TOOLS_CHECKOUT_CANCEL_URL', 'https://tools.tracht-digital.de/'),
+                );
+            } catch (StripeException $e) {
+                return self::json($res, ['error' => $e->getMessage()], 502);
+            }
+            return self::json($res, ['url' => $session['url']], 201);
+        });
+
+        // --- Premium: Stripe webhook (unauthenticated; signature-verified) ----
+        $app->post('/tools/stripe-webhook', function (Request $req, Response $res) use ($c): Response {
+            $secret = self::store($c)?->getSecret(self::NS, 'stripe_webhook_secret');
+            if ($secret === null || $secret === '') {
+                $secret = self::env('STRIPE_WEBHOOK_SECRET', '');
+            }
+            if ($secret === '') {
+                return self::json($res, ['error' => 'Webhook secret not configured'], 503);
+            }
+            $payload = (string) $req->getBody();
+            if (!WebhookVerifier::verify($payload, $req->getHeaderLine('Stripe-Signature'), $secret)) {
+                return self::json($res, ['error' => 'Invalid signature'], 400);
+            }
+            $event = json_decode($payload, true);
+            $type = is_array($event) ? (string) ($event['type'] ?? '') : '';
+            if ($type === 'checkout.session.completed') {
+                $session = $event['data']['object'] ?? [];
+                $userId = (int) ($session['client_reference_id'] ?? ($session['metadata']['user_id'] ?? 0));
+                $toolId = (string) ($session['metadata']['tool_id'] ?? '');
+                $sessionId = (string) ($session['id'] ?? '');
+                if ($userId > 0 && $toolId !== '') {
+                    $c->get(EntitlementRepository::class)->grant($userId, $toolId, $sessionId !== '' ? $sessionId : null);
+                }
+            }
+            return self::json($res, ['received' => true]);
         });
     }
 

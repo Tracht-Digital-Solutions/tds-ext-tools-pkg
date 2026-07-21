@@ -1,9 +1,8 @@
 name: Release (manual → GitHub Packages @latest)
 
-# Production release, ONLY on the manual button. Bumps the version in BOTH
-# package.json and composer.json (lockstep), builds, publishes the npm half, and
-# pushes the commit + tag (the tag is the Composer half's release ref).
-# Pipeline in _build.yml.
+# Manual button for a chosen bump (patch/minor/major). Pushes to main already
+# auto-release a PATCH via dev.yml; use this for a minor/major bump. Also
+# dispatches a rebuild of the dependent site. Pipeline body in _build.yml.
 
 on:
   workflow_dispatch:
@@ -28,4 +27,5 @@ jobs:
     with:
       publish_tag: latest
       bump: ${{ inputs.bump }}
+      rebuild_site: tds-admin-panel
     secrets: inherit

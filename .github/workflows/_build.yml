@@ -23,6 +23,11 @@ on:
         required: false
         type: string
         default: patch
+      rebuild_site:
+        description: Repo whose release.yml to dispatch after a @latest publish (site rebuild). Empty = none.
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -95,13 +100,21 @@ jobs:
           new=$(npm version ${{ inputs.bump }} --no-git-tag-version)
           node -e "const f='composer.json',j=require('./'+f);j.version='${new}'.replace(/^v/,'');require('fs').writeFileSync(f, JSON.stringify(j,null,2)+'\n')"
           git add package.json composer.json
-          git commit -m "release: ${new}"
+          git commit -m "release: ${new} [skip ci]"
           # Annotated tag (-a): `git push --follow-tags` pushes ONLY annotated
           # tags — a lightweight tag never reaches the remote, so Composer (which
           # resolves this package by VCS tag) would never see the release.
           git tag -a "${new}" -m "release ${new}"
           npm publish
           git push --follow-tags origin HEAD:main
+
+      - name: Dispatch site rebuild
+        # After a real release, kick the dependent product's deploy so it
+        # rebuilds against the new extension version.
+        if: ${{ inputs.publish_tag == 'latest' && inputs.rebuild_site != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+        run: gh workflow run release.yml -R Tracht-Digital-Solutions/${{ inputs.rebuild_site }}
 
       - name: Prune old prerelease package versions (keep newest 5)
         continue-on-error: true  # best-effort housekeeping; needs delete:packages

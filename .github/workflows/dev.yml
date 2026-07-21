@@ -1,7 +1,10 @@
-name: Dev prerelease (push → GitHub Packages @dev)
+name: Auto-release on push (→ @latest + site rebuild)
 
-# On every push to main, publish a prerelease (<version>-dev.<run>) under the
-# `dev` dist-tag. Real versions ship via release.yml. Pipeline in _build.yml.
+# Every push to main publishes a real @latest PATCH release and dispatches a
+# rebuild of the dependent site (tds-tools). Use the manual Release button
+# (release.yml) for a minor/major bump. The @latest bump commit carries
+# [skip ci], so auto-pushing that commit does NOT re-trigger this workflow
+# (no publish loop). Pipeline body in _build.yml.
 
 on:
   push:
@@ -9,16 +12,18 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: dev-publish
-  cancel-in-progress: true
+  group: release-publish
+  cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
-  prerelease:
+  release:
     uses: ./.github/workflows/_build.yml
     with:
-      publish_tag: dev
+      publish_tag: latest
+      bump: patch
+      rebuild_site: tds-admin-panel
     secrets: inherit

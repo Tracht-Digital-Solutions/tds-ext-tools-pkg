@@ -119,7 +119,7 @@ export default function ToolsSettings() {
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
             <span className="text-sm">Repo (owner/name)</span>
-            <input type="text" value={rebuildRepo} onChange={(e) => setRebuildRepo(e.target.value)} placeholder="Tracht-Digital-Solutions/tds-tools" />
+            <input type="text" value={rebuildRepo} onChange={(e) => setRebuildRepo(e.target.value)} placeholder="Tracht-Digital-Solutions/tds-tools-frontend" />
           </label>
           <label className="block">
             <span className="text-sm">Workflow</span>

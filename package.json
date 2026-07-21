@@ -48,6 +48,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Tracht-Digital-Solutions/tds-ext-tools.git"
+    "url": "git+https://github.com/Tracht-Digital-Solutions/tds-ext-tools-pkg.git"
   }
 }

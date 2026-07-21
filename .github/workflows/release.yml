@@ -27,5 +27,5 @@ jobs:
     with:
       publish_tag: latest
       bump: ${{ inputs.bump }}
-      rebuild_site: tds-admin-panel
+      rebuild_site: tds-admin-frontend
     secrets: inherit

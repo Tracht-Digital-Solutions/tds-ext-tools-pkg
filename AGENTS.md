@@ -1,21 +1,21 @@
-# AGENTS.md — tds-ext-tools
+# AGENTS.md — tds-ext-tools-pkg
 
 Authoritative architecture/gotcha doc. Read before non-trivial changes. See the
-root `CLAUDE.md` for cross-repo conventions and `tds-panel-contract` for the
+root `CLAUDE.md` for cross-repo conventions and `tds-panel-contract-pkg` for the
 extension model.
 
 ## What this is
 
 The backend + admin UI for the public tools platform. The public site
-(`tds-tools`) is a separate static repo; this extension owns the catalog config,
-AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing`
-(Stripe/settings/webhook patterns) + `tds-ext-blog-cms` (`RebuildTrigger`) +
-`tds-ext-contact-tickets` (public + token-gated endpoints).
+(`tds-tools-frontend`) is a separate static repo; this extension owns the catalog config,
+AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-pkg`
+(Stripe/settings/webhook patterns) + `tds-ext-blog-cms-pkg` (`RebuildTrigger`) +
+`tds-ext-contact-tickets-pkg` (public + token-gated endpoints).
 
 ## Architecture
 
 - **The tool list is owned by the frontend packs, not this backend.** It flows in
-  via `POST /tools/registry` (token-gated), which the `tds-tools` build calls with
+  via `POST /tools/registry` (token-gated), which the `tds-tools-frontend` build calls with
   its composed catalog. `ToolConfigRepository::upsertRegistry()` inserts missing
   rows with the manifest defaults and refreshes name/category, but **never
   clobbers an admin override** (`ON DUPLICATE KEY UPDATE name, category` only).

@@ -1,7 +1,7 @@
 # @tracht-digital-solutions/tds-ext-tools
 
 The **public tools platform admin** — the panel extension that steers the
-`tds-tools` site (`tools.tracht-digital.de`). Manages the tool catalog config
+`tds-tools-frontend` site (`tools.tracht-digital.de`). Manages the tool catalog config
 (which tools are enabled / require login / are premium + price), the AdSense
 config, and the site rebuild.
 
@@ -12,7 +12,7 @@ it by adding it to the admin product's `astro.config` extension array **and**
 
 ## Data flow
 
-The tool **list** is owned by the frontend `tds-tool-*` packs. The `tds-tools`
+The tool **list** is owned by the frontend `tds-tool-*` packs. The `tds-tools-frontend`
 site build POSTs its composed catalog to `POST /tools/registry` (token-gated),
 which upserts rows into `tools_config` **without** clobbering admin overrides.
 The admin edits the overrides (`/admin/tools`); the site reads the merged catalog

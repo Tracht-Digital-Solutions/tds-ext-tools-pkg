@@ -65,7 +65,7 @@ final class ToolsModule extends AbstractModule
             new SettingDef('adsense_slot_catalog', 'AdSense Slot (Übersicht)', false, 'tools'),
             new SettingDef('adsense_slot_tool', 'AdSense Slot (Tool-Seite)', false, 'tools'),
             new SettingDef('registry_token', 'Registry-Sync-Token', true, 'tools'),
-            new SettingDef('rebuild_repo', 'Rebuild-Repo (owner/name)', false, 'tools', 'Tracht-Digital-Solutions/tds-tools'),
+            new SettingDef('rebuild_repo', 'Rebuild-Repo (owner/name)', false, 'tools', 'Tracht-Digital-Solutions/tds-tools-frontend'),
             new SettingDef('rebuild_workflow', 'Rebuild-Workflow', false, 'tools', 'dev.yml'),
             new SettingDef('rebuild_token', 'Rebuild-Token (GitHub PAT)', true, 'tools'),
             new SettingDef('stripe_secret_key', 'Stripe Secret Key (Premium)', true, 'tools'),

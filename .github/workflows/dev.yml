@@ -25,5 +25,5 @@ jobs:
     with:
       publish_tag: latest
       bump: patch
-      rebuild_site: tds-admin-panel
+      rebuild_site: tds-admin-frontend
     secrets: inherit

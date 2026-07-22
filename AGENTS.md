@@ -1,7 +1,7 @@
 # AGENTS.md — tds-ext-tools-pkg
 
 Authoritative architecture/gotcha doc. Read before non-trivial changes. See the
-root `CLAUDE.md` for cross-repo conventions and `tds-panel-contract-pkg` for the
+root `CLAUDE.md` for cross-repo conventions and `tds-frontend-contract-pkg` for the
 extension model.
 
 ## What this is
@@ -43,7 +43,7 @@ AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-
   (`hash_equals`), the catalog route is intentionally open.
 - **Composer depends on the contract VCS-only** in the committed `composer.json`.
   For local dev/test, add a temporary `path` repo (or use a throwaway
-  `composer.local.json`) pointing at `../tds-panel-contract` — Composer FATALs on
+  `composer.local.json`) pointing at `../tds-frontend-contract` — Composer FATALs on
   a missing sibling `path` repo in an isolated CI checkout, so never commit one.
 - **DB tests skip without `TDS_TEST_DB_DSN`** and run against real MariaDB/MySQL
   (drop/recreate `tools_config`). Keep migrations MySQL-8-safe.
@@ -57,5 +57,5 @@ npm install && npm run type-check && npm run build
 ```
 
 Enable in a product: add to the admin `astro.config` extension array +
-`package.json`, and to `tds-core-panel-api`'s `Modules::enabled()` + composer
+`package.json`, and to `tds-core-frontend-api`'s `Modules::enabled()` + composer
 `path` repo.

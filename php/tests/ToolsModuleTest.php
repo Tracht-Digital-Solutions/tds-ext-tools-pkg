@@ -10,8 +10,8 @@ use Slim\Factory\AppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
 use Tds\Ext\Tools\ToolsModule;
-use Tds\Panel\Contract\ModuleRegistry;
-use Tds\Panel\Contract\UserContext;
+use Tds\Frontend\Contract\ModuleRegistry;
+use Tds\Frontend\Contract\UserContext;
 
 /** Minimal UserContext double for RBAC tests. */
 final class FakeUser implements UserContext

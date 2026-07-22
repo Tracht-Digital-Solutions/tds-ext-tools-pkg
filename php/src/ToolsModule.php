@@ -14,11 +14,11 @@ use Tds\Ext\Tools\Service\RebuildTrigger;
 use Tds\Ext\Tools\Service\StripeClient;
 use Tds\Ext\Tools\Service\StripeException;
 use Tds\Ext\Tools\Service\WebhookVerifier;
-use Tds\Panel\Contract\AbstractModule;
-use Tds\Panel\Contract\PermissionDef;
-use Tds\Panel\Contract\SettingDef;
-use Tds\Panel\Contract\SettingsStore;
-use Tds\Panel\Contract\UserContext;
+use Tds\Frontend\Contract\AbstractModule;
+use Tds\Frontend\Contract\PermissionDef;
+use Tds\Frontend\Contract\SettingDef;
+use Tds\Frontend\Contract\SettingsStore;
+use Tds\Frontend\Contract\UserContext;
 
 /**
  * Backend Module for the public tools platform (tds-tools).

@@ -1,6 +1,6 @@
 # @tracht-digital-solutions/tds-ext-tools
 
-The **public tools platform admin** — the panel extension that steers the
+The **public tools platform admin** — the frontend extension that steers the
 `tds-tools-frontend` site (`tools.tracht-digital.de`). Manages the tool catalog config
 (which tools are enabled / require login / are premium + price), the AdSense
 config, and the site rebuild.
@@ -8,7 +8,7 @@ config, and the site rebuild.
 Dual package: a frontend manifest (`@tracht-digital-solutions/tds-ext-tools`, npm)
 + a PHP `Module` (`tracht-digital-solutions/tds-ext-tools`, Composer VCS). Enable
 it by adding it to the admin product's `astro.config` extension array **and**
-`tds-core-panel-api`'s `Modules::enabled()`.
+`tds-core-frontend-api`'s `Modules::enabled()`.
 
 ## Data flow
 

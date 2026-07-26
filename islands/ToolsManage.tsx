@@ -74,6 +74,12 @@ export default function ToolsManage() {
   if (tools === null) return <p role="status"><Spinner /></p>;
   if (error) return <p className="tds-alert tds-alert--danger" role="alert">{error}</p>;
 
+  // The catalog table uses `.tds-table` for the header treatment, cell padding,
+  // row rules and hover. The hand-rolled utility strings it replaces also
+  // referenced the non-existent `--color-border` token, so those row rules were
+  // falling back to currentColor. Only genuine alignment intent
+  // (text-center / text-right) stays as a utility.
+
   return (
     <div className="tools-manage space-y-4">
       <div className="flex items-center justify-between">
@@ -90,34 +96,34 @@ export default function ToolsManage() {
         </p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="tds-table">
             <thead>
-              <tr className="text-left opacity-70">
-                <th className="py-2 pr-3">Tool</th>
-                <th className="px-2">Sichtbar</th>
-                <th className="px-2">Login</th>
-                <th className="px-2">Premium</th>
-                <th className="px-2">Preis (€)</th>
-                <th className="px-2"></th>
+              <tr>
+                <th>Tool</th>
+                <th>Sichtbar</th>
+                <th>Login</th>
+                <th>Premium</th>
+                <th>Preis (€)</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {tools.map((t) => (
-                <tr key={t.tool_id} className="border-t border-[color:var(--color-border)]">
-                  <td className="py-2 pr-3">
+                <tr key={t.tool_id}>
+                  <td>
                     <div className="font-medium">{t.name}</div>
                     <div className="text-xs opacity-60">{t.tool_id} · {t.category}</div>
                   </td>
-                  <td className="px-2 text-center">
+                  <td className="text-center">
                     <input type="checkbox" checked={t.enabled} onChange={(e) => patch(t.tool_id, { enabled: e.target.checked })} aria-label="Sichtbar" />
                   </td>
-                  <td className="px-2 text-center">
+                  <td className="text-center">
                     <input type="checkbox" checked={t.requires_login} onChange={(e) => patch(t.tool_id, { requires_login: e.target.checked })} aria-label="Login erforderlich" />
                   </td>
-                  <td className="px-2 text-center">
+                  <td className="text-center">
                     <input type="checkbox" checked={t.is_premium} onChange={(e) => patch(t.tool_id, { is_premium: e.target.checked })} aria-label="Premium" />
                   </td>
-                  <td className="px-2">
+                  <td>
                     <input
                       type="number"
                       min="0"
@@ -128,7 +134,7 @@ export default function ToolsManage() {
                       disabled={!t.is_premium}
                     />
                   </td>
-                  <td className="px-2 text-right">
+                  <td className="text-right">
                     <button type="button" onClick={() => save(t)} disabled={busy === t.tool_id}>Speichern</button>
                   </td>
                 </tr>

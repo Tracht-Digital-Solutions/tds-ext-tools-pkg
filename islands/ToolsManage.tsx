@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Spinner } from "@tracht-digital-solutions/tds-shared/components";
 
 interface Tool {
   tool_id: string;
@@ -70,8 +71,8 @@ export default function ToolsManage() {
     setStatus(res.ok ? "Rebuild der Website ausgelöst." : `Fehler (HTTP ${res.status}).`);
   };
 
-  if (tools === null) return <p>Wird geladen …</p>;
-  if (error) return <p className="status-pill status-pill--danger">{error}</p>;
+  if (tools === null) return <p role="status"><Spinner /></p>;
+  if (error) return <p className="tds-alert tds-alert--danger" role="alert">{error}</p>;
 
   return (
     <div className="tools-manage space-y-4">
@@ -80,7 +81,7 @@ export default function ToolsManage() {
         <button type="button" onClick={rebuild} disabled={busy === "__rebuild__"}>Website neu bauen</button>
       </div>
 
-      {status ? <p className="status-pill status-pill--info">{status}</p> : null}
+      {status ? <p className="tds-alert" role="status">{status}</p> : null}
 
       {tools.length === 0 ? (
         <p className="text-sm opacity-70">

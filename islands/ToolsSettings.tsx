@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Spinner } from "@tracht-digital-solutions/tds-shared/components";
 
 interface Masked {
   key: string;
@@ -88,7 +89,7 @@ export default function ToolsSettings() {
 
   const hint = (s: Masked | null) => (s?.configured ? `konfiguriert (…${s.last4 ?? "????"})` : "nicht konfiguriert");
 
-  if (!loaded) return <p>Wird geladen …</p>;
+  if (!loaded) return <p role="status"><Spinner /></p>;
 
   return (
     <div className="tools-settings space-y-5">
@@ -136,7 +137,7 @@ export default function ToolsSettings() {
         </label>
       </fieldset>
 
-      {status ? <p className="status-pill status-pill--info">{status}</p> : null}
+      {status ? <p className="tds-alert" role="status">{status}</p> : null}
       <button type="button" onClick={save} disabled={busy}>Speichern</button>
     </div>
   );

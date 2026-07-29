@@ -49,11 +49,53 @@ AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-
   (drop/recreate `tools_config`). Keep migrations MySQL-8-safe.
 - Version stays in the `0.1.x` line (the admin product + host pin `^0.1.x`).
 
+## Tests
+
+```bash
+npm run test:run    # vitest, 122 tests (jsdom per-file via a @vitest-environment docblock)
+```
+
+- `islands/ToolsManage.test.tsx` — the catalog table. Every row decides what the
+  PUBLIC site shows and what it charges, so three things are pinned hard:
+  **`enabled`** (the publish switch), **`price_cents`** (edited in EUROS, stored
+  in CENTS — a 100× slip is a billing bug, and the clamp/rounding are covered at
+  their edges), and that **nothing is saved until Speichern** — the checkboxes
+  patch local state only, so a stray click cannot publish a tool by itself. The
+  PUT is also asserted NOT to echo back `name`/`category`/`tool_id`: those are
+  owned by the `tds-tool-*` packs via the registry sync, and sending them would
+  let the admin table overwrite the packs' own metadata.
+- `islands/ToolsSettings.test.tsx` — AdSense + the rebuild target + the two
+  secrets. Both tokens follow the store's contract (masked on read, **blank on
+  save = keep existing**) and are asserted to stay APART: one shared masked
+  state would make a configured registry token look like a configured rebuild
+  PAT. AdSense is off until switched on — ads render on a public, indexable site.
+- `islands/WidgetBody.test.tsx` — the widget's states; `—` on a failure, never
+  `0 / 0`, which would claim every tool is hidden.
+- `src/index.test.ts` + `tests/packaging.test.ts` — the manifest as a product
+  build sees it (this extension has ONE permission, `tools:manage`, not a
+  read/write pair) and that every specifier resolves, is exported, and ships.
+
+Error-path tests deliberately answer with a POPULATED body and a non-OK status.
+Against an EMPTY error body `res.ok ? (await res.json()).x ?? [] : []` and a bare
+`await res.json()` are indistinguishable, so the ok-check could be deleted with
+no test noticing.
+
+Two tests exist only because the mutation pass proved the obvious ones blind: a
+login-gated FREE tool (both flags true on the premium fixture hides a swap), and
+a second row staying saveable while the first is in flight (a shared busy flag
+would lock the whole table).
+
+> **Float note:** `Math.round(euros * 100)` is float maths, so a mid-point like
+> `1.005 €` lands on `100.4999…` and rounds DOWN to 100 cents. The tests assert
+> the real behaviour (`1.999 € → 200`) rather than pretending the artefact away.
+
+Verified by mutation: 51 deliberate breakages introduced, 51 caught.
+
 ## Commands
 
 ```bash
 composer install && composer test
-npm install && npm run type-check && npm run build
+npm install && npm run type-check && npm run test:run && npm run build
 ```
 
 Enable in a product: add to the admin `astro.config` extension array +

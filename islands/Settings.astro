@@ -2,9 +2,14 @@
 // Tools settings section — AdSense + rebuild + registry config, persisted to the
 // core settings store (/admin/settings/tools).
 import ToolsSettings from "./ToolsSettings.tsx";
+// HYDRATION: `client:visible`, not `client:load`. /einstellungen stacks seven
+// settings panels vertically and all but the first are below the fold; eager
+// hydration fired seven islands and seven settings fetches on load. The page
+// content islands (pages/*.astro) stay `client:load` on purpose — those ARE
+// the reason the user navigated.
 ---
 
 <div class="tds-settings-section__body">
   <h3>Tools / AdSense</h3>
-  <ToolsSettings client:load />
+  <ToolsSettings client:visible />
 </div>

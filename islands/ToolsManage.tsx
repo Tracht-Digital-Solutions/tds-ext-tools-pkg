@@ -71,7 +71,7 @@ export default function ToolsManage() {
     setStatus(res.ok ? "Rebuild der Website ausgelöst." : `Fehler (HTTP ${res.status}).`);
   };
 
-  if (tools === null) return <p role="status"><Spinner /></p>;
+  if (tools === null) return <p><Spinner /></p>;
   if (error) return <p className="tds-alert tds-alert--danger" role="alert">{error}</p>;
 
   // The catalog table uses `.tds-table` for the header treatment, cell padding,

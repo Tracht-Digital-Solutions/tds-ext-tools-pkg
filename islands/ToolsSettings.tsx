@@ -89,7 +89,7 @@ export default function ToolsSettings() {
 
   const hint = (s: Masked | null) => (s?.configured ? `konfiguriert (…${s.last4 ?? "????"})` : "nicht konfiguriert");
 
-  if (!loaded) return <p role="status"><Spinner /></p>;
+  if (!loaded) return <p><Spinner /></p>;
 
   return (
     <div className="tools-settings space-y-5">

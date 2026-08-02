@@ -42,7 +42,7 @@ describe("the widget", () => {
 
   it("shows a loading line before the request resolves", () => {
     render(<WidgetBody />);
-    expect(screen.getByText("Wird geladen …")).toBeTruthy();
+    expect(screen.getByLabelText("Wird geladen")).toBeTruthy();
   });
 
   it("renders the visible count against the total", async () => {

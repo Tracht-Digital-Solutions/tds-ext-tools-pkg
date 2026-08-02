@@ -111,7 +111,7 @@ describe("loading", () => {
 
   it("shows a loading line until the catalog arrives", () => {
     render(<ToolsManage />);
-    expect(screen.getByText("Wird geladen …")).toBeTruthy();
+    expect(screen.getByLabelText("Wird geladen")).toBeTruthy();
   });
 
   it("lists a tool with its id and category", async () => {
@@ -168,7 +168,7 @@ describe("loading", () => {
     respond(/^\/admin\/tools$/, {}, 500, "GET");
     render(<ToolsManage />);
     await screen.findByText("Fehler (HTTP 500).");
-    expect(screen.queryByText("Wird geladen …")).toBeNull();
+    expect(screen.queryByLabelText("Wird geladen")).toBeNull();
   });
 });
 

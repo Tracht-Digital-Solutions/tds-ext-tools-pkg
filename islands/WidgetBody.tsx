@@ -21,7 +21,7 @@ export default function WidgetBody() {
   }, []);
 
   if (error) return <p className="text-sm opacity-70">—</p>;
-  if (!data) return <p role="status"><Spinner /></p>;
+  if (!data) return <p><Spinner /></p>;
 
   return (
     <div className="tools-widget space-y-1 text-sm">

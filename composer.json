@@ -3,7 +3,7 @@
   "description": "Public tools platform admin/backend for the TDS panel: tool catalog config (enabled/login/premium/price), AdSense config, registry sync + rebuild trigger for the tds-tools site (backend Module).",
   "type": "library",
   "license": "proprietary",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "require": {
     "php": ">=8.1",
     "slim/slim": "^4.13",

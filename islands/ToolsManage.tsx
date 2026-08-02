@@ -84,13 +84,13 @@ export default function ToolsManage() {
     <div className="tools-manage space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm opacity-70">{tools.length} Tool(s)</p>
-        <button type="button" onClick={rebuild} disabled={busy === "__rebuild__"}>Website neu bauen</button>
+        <button type="button" className="btn btn-ghost" onClick={rebuild} disabled={busy === "__rebuild__"} aria-busy={busy === "__rebuild__"}>Website neu bauen</button>
       </div>
 
       {status ? <p className="tds-alert" role="status">{status}</p> : null}
 
       {tools.length === 0 ? (
-        <p className="text-sm opacity-70">
+        <p className="tds-empty">
           Noch keine Tools. Sie erscheinen automatisch, sobald die Website (tds-tools) gebaut
           wurde und ihren Katalog synchronisiert hat.
         </p>
@@ -128,14 +128,14 @@ export default function ToolsManage() {
                       type="number"
                       min="0"
                       step="0.01"
-                      className="w-24"
+                      className="field-boxed w-24"
                       value={(t.price_cents / 100).toFixed(2)}
                       onChange={(e) => patch(t.tool_id, { price_cents: Math.max(0, Math.round(Number(e.target.value) * 100)) })}
                       disabled={!t.is_premium}
                     />
                   </td>
                   <td className="text-right">
-                    <button type="button" onClick={() => save(t)} disabled={busy === t.tool_id}>Speichern</button>
+                    <button type="button" className="btn btn-primary" onClick={() => save(t)} disabled={busy === t.tool_id} aria-busy={busy === t.tool_id}>Speichern</button>
                   </td>
                 </tr>
               ))}

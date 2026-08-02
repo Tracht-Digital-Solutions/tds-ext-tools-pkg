@@ -101,16 +101,16 @@ export default function ToolsSettings() {
         </label>
         <label className="block">
           <span className="text-sm">Publisher-ID</span>
-          <input type="text" value={publisherId} onChange={(e) => setPublisherId(e.target.value)} placeholder="ca-pub-…" />
+          <input className="field-boxed" type="text" value={publisherId} onChange={(e) => setPublisherId(e.target.value)} placeholder="ca-pub-…" />
         </label>
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
             <span className="text-sm">Slot (Übersicht)</span>
-            <input type="text" value={slotCatalog} onChange={(e) => setSlotCatalog(e.target.value)} placeholder="123…" />
+            <input className="field-boxed" type="text" value={slotCatalog} onChange={(e) => setSlotCatalog(e.target.value)} placeholder="123…" />
           </label>
           <label className="block">
             <span className="text-sm">Slot (Tool-Seite)</span>
-            <input type="text" value={slotTool} onChange={(e) => setSlotTool(e.target.value)} placeholder="123…" />
+            <input className="field-boxed" type="text" value={slotTool} onChange={(e) => setSlotTool(e.target.value)} placeholder="123…" />
           </label>
         </div>
       </fieldset>
@@ -120,25 +120,25 @@ export default function ToolsSettings() {
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
             <span className="text-sm">Repo (owner/name)</span>
-            <input type="text" value={rebuildRepo} onChange={(e) => setRebuildRepo(e.target.value)} placeholder="Tracht-Digital-Solutions/tds-tools-frontend" />
+            <input className="field-boxed" type="text" value={rebuildRepo} onChange={(e) => setRebuildRepo(e.target.value)} placeholder="Tracht-Digital-Solutions/tds-tools-frontend" />
           </label>
           <label className="block">
             <span className="text-sm">Workflow</span>
-            <input type="text" value={rebuildWorkflow} onChange={(e) => setRebuildWorkflow(e.target.value)} placeholder="dev.yml" />
+            <input className="field-boxed" type="text" value={rebuildWorkflow} onChange={(e) => setRebuildWorkflow(e.target.value)} placeholder="dev.yml" />
           </label>
         </div>
         <label className="block">
           <span className="text-sm">Rebuild-Token (GitHub PAT) <em className="opacity-60">({hint(rebuildState)})</em></span>
-          <input type="password" value={rebuildToken} onChange={(e) => setRebuildToken(e.target.value)} placeholder="ghp_… (leer = behalten)" autoComplete="off" />
+          <input className="field-boxed" type="password" value={rebuildToken} onChange={(e) => setRebuildToken(e.target.value)} placeholder="ghp_… (leer = behalten)" autoComplete="off" />
         </label>
         <label className="block">
           <span className="text-sm">Registry-Sync-Token <em className="opacity-60">({hint(registryState)})</em></span>
-          <input type="password" value={registryToken} onChange={(e) => setRegistryToken(e.target.value)} placeholder="(leer = behalten)" autoComplete="off" />
+          <input className="field-boxed" type="password" value={registryToken} onChange={(e) => setRegistryToken(e.target.value)} placeholder="(leer = behalten)" autoComplete="off" />
         </label>
       </fieldset>
 
       {status ? <p className="tds-alert" role="status">{status}</p> : null}
-      <button type="button" onClick={save} disabled={busy}>Speichern</button>
+      <button type="button" className="btn btn-primary" onClick={save} disabled={busy} aria-busy={busy}>Speichern</button>
     </div>
   );
 }

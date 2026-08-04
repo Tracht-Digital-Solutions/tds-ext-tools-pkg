@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Spinner } from "@tracht-digital-solutions/tds-shared/components";
+import { Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
 
 interface Tool {
   tool_id: string;
@@ -60,7 +60,12 @@ export default function ToolsManage() {
       }),
     });
     setBusy(null);
-    setStatus(res.ok ? `„${tool.name}“ gespeichert — Rebuild ausgelöst.` : `Fehler (HTTP ${res.status}).`);
+    // One `status` string for a whole TABLE of rows meant saving row 3 wiped
+    // row 1's confirmation, and the banner sat at the top of the table while
+    // the button that produced it was somewhere down the list. Per-row
+    // outcomes belong in a toast, which also names the tool it is about.
+    if (res.ok) toast.success(`„${tool.name}“ gespeichert — Rebuild ausgelöst.`);
+    else toast.danger(`„${tool.name}“ konnte nicht gespeichert werden (HTTP ${res.status}).`);
   };
 
   const rebuild = async () => {
@@ -68,7 +73,8 @@ export default function ToolsManage() {
     setStatus(null);
     const res = await api("/admin/tools/rebuild", { method: "POST" });
     setBusy(null);
-    setStatus(res.ok ? "Rebuild der Website ausgelöst." : `Fehler (HTTP ${res.status}).`);
+    if (res.ok) toast.success("Rebuild der Website ausgelöst.");
+    else toast.danger(`Rebuild fehlgeschlagen (HTTP ${res.status}).`);
   };
 
   if (tools === null) return <p><Spinner /></p>;
@@ -87,6 +93,8 @@ export default function ToolsManage() {
         <button type="button" className="btn btn-ghost" onClick={rebuild} disabled={busy === "__rebuild__"} aria-busy={busy === "__rebuild__"}>Website neu bauen</button>
       </div>
 
+      {/* Outcomes are toasts now; nothing else writes `status`, so this is
+          the empty-state hint only. */}
       {status ? <p className="tds-alert" role="status">{status}</p> : null}
 
       {tools.length === 0 ? (

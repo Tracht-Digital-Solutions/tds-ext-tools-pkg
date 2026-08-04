@@ -36,6 +36,19 @@ AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-
   version prefix is globally unique — the in-process auto-migrator loads every
   module's migrations into ONE phinxlog; a reused class name is a fatal
   redeclaration.
+- **…and the FILE name must map to that class**: `20260720000001_tools_create_config.php`
+  ⇒ `ToolsCreateConfig`. Phinx derives the expected class from the file name and throws
+  `Could not find class …` while *scanning* the set, so a mismatch aborts the whole
+  composed migration run — every extension, not just this one. Both files here were
+  originally `create_tools_*` (⇒ `CreateTools*`) against `ToolsCreate*` classes and were
+  renamed in 0.1.10; nothing had ever migrated. Verify with a real `phinx migrate`, not by
+  reading — phpunit does not run migrations.
+- **Per-row outcomes are toasts (tds-shared `>=0.16.0`), never one shared
+  banner.** `ToolsManage` is a table, and a single `status` string for all rows
+  meant saving row 3 wiped row 1's confirmation — while the banner itself sat at
+  the top of the table, far from the button that produced it. Toasts carry the
+  tool's name, so the confirmation says *which* row was saved. Never mount a
+  `ToastHost` here; the frontend host owns the only one.
 - **`env()` uses the safe `getenv() === false` check**, never `?? getenv() ?: $d`
   (the "0"/"" precedence trap).
 - **RBAC is the module's job** — each admin route calls `requireManage()` against

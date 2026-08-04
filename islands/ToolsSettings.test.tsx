@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ToolsSettings from "./ToolsSettings";
+import { TOAST_EVENT } from "@tracht-digital-solutions/tds-shared/toast";
 
 /**
  * AdSense config + the public-site rebuild target + the registry-sync token,
@@ -32,7 +33,15 @@ const KEYS = [
   "registry_token",
 ];
 
+/** Outcomes are toasts now — collected off the `tds:toast` bus. */
+let toasts: Array<{ variant: string; message: string }> = [];
+const collectToast = (e: Event) => {
+  toasts.push((e as CustomEvent<{ variant: string; message: string }>).detail);
+};
+
 beforeEach(() => {
+  toasts = [];
+  window.addEventListener(TOAST_EVENT, collectToast);
   calls = [];
   getReply = { status: 200, body: { settings: [] } };
   putReply = { status: 200, body: {} };
@@ -47,7 +56,10 @@ beforeEach(() => {
   );
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  window.removeEventListener(TOAST_EVENT, collectToast);
+  cleanup();
+});
 
 const user = () => userEvent.setup({ delay: null });
 const stored = (pairs: Record<string, string>) => ({
@@ -347,7 +359,7 @@ describe("saving", () => {
   it("confirms and re-reads the masked state after a save", async () => {
     const u = await open();
     await u.click(screen.getByRole("button", { name: "Speichern" }));
-    expect(await screen.findByText("Gespeichert.")).toBeTruthy();
+    await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("Gespeichert"))).toBe(true));
     await waitFor(() => expect(calls.filter((c) => c.method === "GET")).toHaveLength(2));
   });
 
@@ -356,7 +368,7 @@ describe("saving", () => {
     await u.type(rebuildTokenBox(), "ghp_new");
     await u.type(registryTokenBox(), "reg_new");
     await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await screen.findByText("Gespeichert.");
+    await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("Gespeichert"))).toBe(true));
     expect(rebuildTokenBox().value).toBe("");
     expect(registryTokenBox().value).toBe("");
   });
@@ -366,7 +378,7 @@ describe("saving", () => {
     const u = await open();
     await u.type(rebuildTokenBox(), "ghp_new");
     await u.click(screen.getByRole("button", { name: "Speichern" }));
-    expect(await screen.findByText("Fehler (HTTP 500).")).toBeTruthy();
+    await waitFor(() => expect(toasts.some((t) => t.variant === "danger" && t.message.includes("500"))).toBe(true));
     expect(rebuildTokenBox().value).toBe("ghp_new");
   });
 
@@ -374,7 +386,7 @@ describe("saving", () => {
     putReply = { status: 403, body: {} };
     const u = await open();
     await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await screen.findByText("Fehler (HTTP 403).");
+    await waitFor(() => expect(toasts.some((t) => t.variant === "danger" && t.message.includes("403"))).toBe(true));
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(1);
   });
 
@@ -382,7 +394,7 @@ describe("saving", () => {
     const u = await open();
     const button = screen.getByRole("button", { name: "Speichern" }) as HTMLButtonElement;
     await u.click(button);
-    await screen.findByText("Gespeichert.");
+    await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("Gespeichert"))).toBe(true));
     expect(button.disabled).toBe(false);
   });
 });

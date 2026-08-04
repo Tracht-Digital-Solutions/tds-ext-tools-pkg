@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ToolsManage from "./ToolsManage";
+import { TOAST_EVENT } from "@tracht-digital-solutions/tds-shared/toast";
 
 /**
  * The tool-catalog admin table. Every row decides what the PUBLIC tools site
@@ -66,7 +67,15 @@ const PREMIUM = {
   sort_order: 20,
 };
 
+/** Outcomes are toasts now — collected off the `tds:toast` bus. */
+let toasts: Array<{ variant: string; message: string }> = [];
+const collectToast = (e: Event) => {
+  toasts.push((e as CustomEvent<{ variant: string; message: string }>).detail);
+};
+
 beforeEach(() => {
+  toasts = [];
+  window.addEventListener(TOAST_EVENT, collectToast);
   calls = [];
   gate = null;
   handlers = [() => ({ status: 200, body: {} })];
@@ -84,7 +93,10 @@ beforeEach(() => {
   );
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  window.removeEventListener(TOAST_EVENT, collectToast);
+  cleanup();
+});
 
 const user = () => userEvent.setup({ delay: null });
 const sent = (method: string, match: RegExp) => calls.filter((c) => c.method === method && match.test(c.url));
@@ -364,21 +376,21 @@ describe("saving a row", () => {
   it("confirms by name and mentions the rebuild it triggered", async () => {
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
-    expect(await screen.findByText("„QR-Code-Generator“ gespeichert — Rebuild ausgelöst.")).toBeTruthy();
+await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("„QR-Code-Generator“ gespeichert"))).toBe(true));
   });
 
   it("does NOT claim a rebuild when the save failed", async () => {
     respond(/^\/admin\/tools\//, { error: "nope" }, 500, "PUT");
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
-    expect(await screen.findByText("Fehler (HTTP 500).")).toBeTruthy();
-    expect(screen.queryByText(/Rebuild ausgelöst/)).toBeNull();
+await waitFor(() => expect(toasts.some((t) => t.variant === "danger" && t.message.includes("500"))).toBe(true));
+    expect(toasts.some((t) => t.message.includes("Rebuild ausgelöst"))).toBe(false);
   });
 
   it("re-enables the row button afterwards", async () => {
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
-    await screen.findByText(/gespeichert/);
+await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("gespeichert"))).toBe(true));
     expect((saveIn("QR-Code-Generator") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -386,7 +398,7 @@ describe("saving a row", () => {
     // The local patch is the source of truth; a re-read would race it.
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
-    await screen.findByText(/gespeichert/);
+await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("gespeichert"))).toBe(true));
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(1);
   });
 });
@@ -401,29 +413,29 @@ describe("the manual rebuild", () => {
   it("confirms the trigger", async () => {
     const u = await open();
     await u.click(screen.getByRole("button", { name: "Website neu bauen" }));
-    expect(await screen.findByText("Rebuild der Website ausgelöst.")).toBeTruthy();
+await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("Rebuild der Website ausgelöst"))).toBe(true));
   });
 
   it("does NOT claim a rebuild that failed", async () => {
     respond(/rebuild$/, { error: "no token" }, 503, "POST");
     const u = await open();
     await u.click(screen.getByRole("button", { name: "Website neu bauen" }));
-    expect(await screen.findByText("Fehler (HTTP 503).")).toBeTruthy();
-    expect(screen.queryByText(/ausgelöst/)).toBeNull();
+await waitFor(() => expect(toasts.some((t) => t.variant === "danger" && t.message.includes("503"))).toBe(true));
+    expect(toasts.some((t) => t.variant === "success")).toBe(false);
   });
 
   it("re-enables the button afterwards", async () => {
     const u = await open();
     const button = screen.getByRole("button", { name: "Website neu bauen" }) as HTMLButtonElement;
     await u.click(button);
-    await screen.findByText(/ausgelöst/);
+await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("ausgelöst"))).toBe(true));
     expect(button.disabled).toBe(false);
   });
 
   it("does not save any tool as a side effect", async () => {
     const u = await open();
     await u.click(screen.getByRole("button", { name: "Website neu bauen" }));
-    await screen.findByText(/ausgelöst/);
+await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("ausgelöst"))).toBe(true));
     expect(puts()).toHaveLength(0);
   });
 });

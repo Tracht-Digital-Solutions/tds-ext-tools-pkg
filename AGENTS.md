@@ -114,3 +114,24 @@ npm install && npm run type-check && npm run test:run && npm run build
 Enable in a product: add to the admin `astro.config` extension array +
 `package.json`, and to `tds-core-frontend-api`'s `Modules::enabled()` + composer
 `path` repo.
+
+## Mobile layout
+
+This package ships **no CSS**, so every layout decision is a shared class or a
+Tailwind utility, and neither is checked by anything at runtime. Two rules:
+
+- **A row of more than two things — or any row holding a full-width field —
+  goes on `.tds-row`, `.tds-list__row` or `.tds-toolbar`.** All three wrap.
+  A hand-rolled `flex` does not, and on a 375px screen the overflow is not
+  even visible: `body { overflow-x: hidden }` clips it, so the content simply
+  is not there.
+- **A `<table>` needs `tds-table` and nothing else.** The primitive turns
+  itself into a horizontal scroller below 40rem; an extra `overflow-x`
+  wrapper or an inline style is redundant. A table with no focusable cell
+  also needs `tabindex="0"` + `role="region"` + a label, or its scrollport
+  cannot be reached by keyboard.
+
+`npm run lint:primitives` enforces the class part of this (including a
+`<table>` without `tds-table` and a flex/grid table cell, which silently
+drops the cell out of the column algorithm). It is a **regex scan**, so a tag
+name written inside a comment counts as markup — name elements in prose.

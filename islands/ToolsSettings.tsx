@@ -103,7 +103,7 @@ export default function ToolsSettings() {
           <span className="text-sm">Publisher-ID</span>
           <input className="field-boxed" type="text" value={publisherId} onChange={(e) => setPublisherId(e.target.value)} placeholder="ca-pub-…" />
         </label>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label className="block">
             <span className="text-sm">Slot (Übersicht)</span>
             <input className="field-boxed" type="text" value={slotCatalog} onChange={(e) => setSlotCatalog(e.target.value)} placeholder="123…" />
@@ -117,7 +117,7 @@ export default function ToolsSettings() {
 
       <fieldset className="space-y-3">
         <legend className="text-sm font-semibold">Website-Rebuild</legend>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label className="block">
             <span className="text-sm">Repo (owner/name)</span>
             <input className="field-boxed" type="text" value={rebuildRepo} onChange={(e) => setRebuildRepo(e.target.value)} placeholder="Tracht-Digital-Solutions/tds-tools-frontend" />

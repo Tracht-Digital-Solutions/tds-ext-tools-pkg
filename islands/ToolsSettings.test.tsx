@@ -1,3 +1,11 @@
+
+/**
+ * Path + query of a request. The island calls an ABSOLUTE URL now (via
+ * `apiFetch`); a relative one would hit the product's own static host and come
+ * back as SPA-fallback HTML with a 200. Matching on the path keeps the route
+ * matchers below anchored.
+ */
+const pathOf = (url: string) => String(url).replace(/^https?:\/\/[^/]+/i, "");
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -86,7 +94,12 @@ describe("loading", () => {
   it("reads its own namespace of the settings store", async () => {
     await open();
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    expect(fetchMock.mock.calls[0]![0]).toBe(NS);
+    expect(pathOf(fetchMock.mock.calls[0]![0] as string)).toBe(NS);
+    // Absolute, on the API host. Every other assertion here matches the PATH,
+    // which a relative fetch satisfies too — so this is the one that fails if
+    // the call ever goes back to the product's own origin (whose SPA fallback
+    // answers 200 + HTML and turns into a silent empty state).
+    expect(String(fetchMock.mock.calls[0]![0]).startsWith("https://api.tracht-digital.de/")).toBe(true);
     expect(fetchMock.mock.calls[0]![1]).toMatchObject({ credentials: "include" });
   });
 
@@ -254,7 +267,7 @@ describe("saving", () => {
     const u = await open();
     await u.click(screen.getByRole("button", { name: "Speichern" }));
     await waitFor(() => expect(put()).toBeDefined());
-    expect(put()!.url).toBe(NS);
+    expect(pathOf(put()!.url)).toBe(NS);
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
     const call = fetchMock.mock.calls.find((c) => (c[1] as RequestInit)?.method === "PUT")!;
     expect((call[1] as RequestInit).headers).toMatchObject({ "Content-Type": "application/json" });

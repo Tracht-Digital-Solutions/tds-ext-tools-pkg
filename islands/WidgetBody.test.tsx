@@ -1,3 +1,11 @@
+
+/**
+ * Path + query of a request. The island calls an ABSOLUTE URL now (via
+ * `apiFetch`); a relative one would hit the product's own static host and come
+ * back as SPA-fallback HTML with a 200. Matching on the path keeps the route
+ * matchers below anchored.
+ */
+const pathOf = (url: string) => String(url).replace(/^https?:\/\/[^/]+/i, "");
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -36,7 +44,12 @@ describe("the widget", () => {
   it("fetches its summary endpoint with credentials", () => {
     render(<WidgetBody />);
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    expect(fetchMock.mock.calls[0]![0]).toBe("/tools/summary");
+    expect(pathOf(fetchMock.mock.calls[0]![0] as string)).toBe("/tools/summary");
+    // Absolute, on the API host. Every other assertion here matches the PATH,
+    // which a relative fetch satisfies too — so this is the one that fails if
+    // the call ever goes back to the product's own origin (whose SPA fallback
+    // answers 200 + HTML and turns into a silent empty state).
+    expect(String(fetchMock.mock.calls[0]![0]).startsWith("https://api.tracht-digital.de/")).toBe(true);
     expect(fetchMock.mock.calls[0]![1]).toMatchObject({ credentials: "include" });
   });
 

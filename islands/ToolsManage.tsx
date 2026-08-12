@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
+import { apiFetch } from "@tracht-digital-solutions/tds-shared/api";
 
 interface Tool {
   tool_id: string;
@@ -12,7 +13,7 @@ interface Tool {
   sort_order: number;
 }
 
-const api = (path: string, init?: RequestInit) => fetch(path, { credentials: "include", ...init });
+const api = apiFetch;
 
 /**
  * Tool-catalog management: one row per tool (enabled / login / premium / price),

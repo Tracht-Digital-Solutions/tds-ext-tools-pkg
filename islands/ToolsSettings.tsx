@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
+import { apiFetch } from "@tracht-digital-solutions/tds-shared/api";
 
 interface Masked {
   key: string;
@@ -9,7 +10,7 @@ interface Masked {
   value?: string;
 }
 
-const api = (path: string, init?: RequestInit) => fetch(path, { credentials: "include", ...init });
+const api = apiFetch;
 const NS = "/admin/settings/tools";
 
 /**

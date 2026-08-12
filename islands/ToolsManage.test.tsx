@@ -38,9 +38,18 @@ function holdRequests(match: RegExp) {
   };
 }
 
+
+/**
+ * Path + query of a request. The island calls an ABSOLUTE URL now (via
+ * `apiFetch`); a relative one would hit the product's own static host and come
+ * back as SPA-fallback HTML with a 200. Matching on the path keeps the route
+ * matchers below anchored.
+ */
+const pathOf = (url: string) => String(url).replace(/^https?:\/\/[^/]+/i, "");
+
 function respond(match: RegExp, body: unknown, status = 200, method?: string) {
   handlers.unshift((url, init) => {
-    if (!match.test(url)) return undefined;
+    if (!match.test(pathOf(url))) return undefined;
     if (method && (init?.method ?? "GET") !== method) return undefined;
     return { status, body };
   });
@@ -86,7 +95,7 @@ beforeEach(() => {
       const method = init?.method ?? "GET";
       calls.push({ url, method, body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined });
       const g = gate;
-      if (g && g.match.test(url)) await g.promise;
+      if (g && g.match.test(pathOf(url))) await g.promise;
       const reply = handlers.map((h) => h(url, init)).find((r) => r !== undefined)!;
       return { ok: reply.status < 300, status: reply.status, json: async () => reply.body } as Response;
     }),
@@ -99,7 +108,7 @@ afterEach(() => {
 });
 
 const user = () => userEvent.setup({ delay: null });
-const sent = (method: string, match: RegExp) => calls.filter((c) => c.method === method && match.test(c.url));
+const sent = (method: string, match: RegExp) => calls.filter((c) => c.method === method && match.test(pathOf(c.url)));
 
 async function open(tools: unknown[] = [TOOL]) {
   respond(/^\/admin\/tools$/, { tools }, 200, "GET");
@@ -117,7 +126,12 @@ describe("loading", () => {
   it("reads the admin catalog with credentials", async () => {
     await open();
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    expect(fetchMock.mock.calls[0]![0]).toBe("/admin/tools");
+    expect(pathOf(fetchMock.mock.calls[0]![0] as string)).toBe("/admin/tools");
+    // Absolute, on the API host. Every other assertion here matches the PATH,
+    // which a relative fetch satisfies too — so this is the one that fails if
+    // the call ever goes back to the product's own origin (whose SPA fallback
+    // answers 200 + HTML and turns into a silent empty state).
+    expect(String(fetchMock.mock.calls[0]![0]).startsWith("https://api.tracht-digital.de/")).toBe(true);
     expect(fetchMock.mock.calls[0]![1]).toMatchObject({ credentials: "include" });
   });
 
@@ -296,7 +310,7 @@ describe("saving a row", () => {
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(puts()[0]!.url).toBe("/admin/tools/qr-code");
+    expect(pathOf(puts()[0]!.url)).toBe("/admin/tools/qr-code");
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
     const call = fetchMock.mock.calls.find((c) => (c[1] as RequestInit)?.method === "PUT")!;
     expect((call[1] as RequestInit).headers).toMatchObject({ "Content-Type": "application/json" });
@@ -307,7 +321,7 @@ describe("saving a row", () => {
     const u = user();
     await u.click(saveIn("QR-Code-Generator"));
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(puts()[0]!.url).toBe("/admin/tools/pdf%2Fmerge%20tool");
+    expect(pathOf(puts()[0]!.url)).toBe("/admin/tools/pdf%2Fmerge%20tool");
   });
 
   it("sends every editable field", async () => {
@@ -370,7 +384,7 @@ describe("saving a row", () => {
     await screen.findByText("PDF zusammenfügen");
     await u.click(saveIn("PDF zusammenfügen"));
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(puts()[0]!.url).toBe("/admin/tools/pdf-merge");
+    expect(pathOf(puts()[0]!.url)).toBe("/admin/tools/pdf-merge");
   });
 
   it("confirms by name and mentions the rebuild it triggered", async () => {

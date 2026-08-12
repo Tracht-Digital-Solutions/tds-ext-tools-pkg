@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Spinner } from "@tracht-digital-solutions/tds-shared/components";
+import { apiFetch } from "@tracht-digital-solutions/tds-shared/api";
 
 interface Summary {
   total: number;
@@ -14,7 +15,7 @@ export default function WidgetBody() {
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    fetch("/tools/summary", { credentials: "include" })
+    apiFetch("/tools/summary")
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then(setData)
       .catch(() => setError(true));

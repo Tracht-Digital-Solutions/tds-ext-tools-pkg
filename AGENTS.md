@@ -32,6 +32,23 @@ AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-
 
 ## Gotchas
 
+- **Call the API with `apiFetch` from `@tracht-digital-solutions/tds-shared/api`,
+  never a relative `fetch`.** Every island used to define its own
+  `const api = (path, init) => fetch(path, { credentials: "include", ...init })`
+  with a RELATIVE path. In a product that resolves against the product's own
+  static host (`management.`/`app.tracht-digital.de`), not the API — and the
+  static host answers unknown paths with its SPA fallback, i.e. **200 + HTML**.
+  So `res.ok` is `true`, `res.json()` throws, and the usual
+  `.catch(() => setRows([]))` renders a calm, permanent empty state with no
+  error and no console warning. `apiFetch` resolves the base from
+  `<meta name="tds-api-base">` (written by the frontend host) and routes 401s
+  through the host's confirm-against-`/me` backstop, which extension calls
+  previously skipped entirely.
+  The island tests match on the request PATH (`pathOf()`), which a relative
+  fetch satisfies just as well — so one assertion per suite pins the **absolute
+  host**. That is the line that fails if this ever regresses.
+
+
 - **Migration class name is `ToolsCreateConfig`** (module-id prefixed) and the
   version prefix is globally unique — the in-process auto-migrator loads every
   module's migrations into ONE phinxlog; a reused class name is a fatal

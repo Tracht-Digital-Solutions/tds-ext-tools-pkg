@@ -152,3 +152,20 @@ Tailwind utility, and neither is checked by anything at runtime. Two rules:
 `<table>` without `tds-table` and a flex/grid table cell, which silently
 drops the cell out of the column algorithm). It is a **regex scan**, so a tag
 name written inside a comment counts as markup — name elements in prose.
+
+## API-Referenz (`php/docs/api.php`)
+
+This module implements the contract's optional `ApiDocSource`: `php/docs/api.php`
+returns one entry per route (summary, params, responses, required permission),
+and the admin frontend's API reference joins it onto the introspected Slim routes
+by `"<METHOD> <pattern>"`. Two things to know before editing a route:
+
+- **`pattern` must be the Slim pattern verbatim**, inline regex included
+  (`C:/Program Files/Git/admin/tools/{id}`). A prettified path silently produces an orphan doc *and* an
+  undocumented route rather than an error.
+- **`php/tests/ToolsApiDocsTest.php` asserts both directions** — the documented
+  set and the registered set must be the same set, every path placeholder must
+  be described, and a named permission must exist in `permissions()`. Adding or
+  renaming a route without touching `docs/api.php` fails there. That is the
+  point: prose next to code rots, and a reference full of confident, wrong
+  detail is worse than the bare route list it replaced.

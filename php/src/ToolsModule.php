@@ -15,6 +15,7 @@ use Tds\Ext\Tools\Service\StripeClient;
 use Tds\Ext\Tools\Service\StripeException;
 use Tds\Ext\Tools\Service\WebhookVerifier;
 use Tds\Frontend\Contract\AbstractModule;
+use Tds\Frontend\Contract\ApiDocSource;
 use Tds\Frontend\Contract\PermissionDef;
 use Tds\Frontend\Contract\SettingDef;
 use Tds\Frontend\Contract\SettingsStore;
@@ -35,7 +36,7 @@ use Tds\Frontend\Contract\UserContext;
  * (AdSense, rebuild, registry token) via the core {@see SettingsStore} (ns=tools),
  * DB-first with env fallback.
  */
-final class ToolsModule extends AbstractModule
+final class ToolsModule extends AbstractModule implements ApiDocSource
 {
     private const NS = 'tools';
 
@@ -304,5 +305,16 @@ final class ToolsModule extends AbstractModule
     {
         $res->getBody()->write(json_encode($data, JSON_THROW_ON_ERROR));
         return $res->withStatus($status)->withHeader('Content-Type', 'application/json');
+    }
+
+    /**
+     * Route documentation for the admin frontend's API reference. Kept in its
+     * own file so the prose does not sit in the middle of the wiring.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function apiDocs(): array
+    {
+        return require __DIR__ . '/../docs/api.php';
     }
 }

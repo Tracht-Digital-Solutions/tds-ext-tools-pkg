@@ -18,8 +18,23 @@ const api = apiFetch;
 /**
  * Tool-catalog management: one row per tool (enabled / login / premium / price),
  * saved to the backend which fires a rebuild of the public site. The tool list
- * is populated by the site build's registry sync, so the empty state points
- * there rather than offering a "create tool" action.
+ * is owned by the public site's composed packs, so the empty state points at the
+ * transfer rather than offering a "create tool" action.
+ *
+ * ### The empty state is the whole feature when the table is empty
+ *
+ * It used to read "Sie erscheinen automatisch, sobald die Website gebaut wurde
+ * und ihren Katalog synchronisiert hat." That was false, and it is why this
+ * page sat empty for the platform's entire life: the site's build-time sync was
+ * gated on `TOOLS_REGISTRY_TOKEN`, which no workflow exported and which Vite
+ * would never have injected anyway (no `PUBLIC_` prefix, no `envField` schema).
+ * So the operator was told to wait for something that could not happen, and the
+ * sync fails soft by design, so nothing anywhere went red.
+ *
+ * The transfer is host-side now (`/_setup/install.php` posts
+ * `dist/tools-catalog.json`), and it needs two steps IN ORDER — the registry
+ * answers 503 until the token exists in the panel. Naming both, in order, is
+ * the difference between a dead page and a five-minute task.
  */
 export default function ToolsManage() {
   const [tools, setTools] = useState<Tool[] | null>(null);
@@ -99,10 +114,28 @@ export default function ToolsManage() {
       {status ? <p className="tds-alert" role="status">{status}</p> : null}
 
       {tools.length === 0 ? (
-        <p className="tds-empty">
-          Noch keine Tools. Sie erscheinen automatisch, sobald die Website (tds-tools) gebaut
-          wurde und ihren Katalog synchronisiert hat.
-        </p>
+        <div className="tds-empty">
+          <p className="font-semibold">Noch keine Tools übertragen.</p>
+          <p className="mt-2">
+            Der Tool-Katalog wird nicht automatisch übertragen — er muss einmal vom Host
+            der Tools-Website an diese API geschickt werden. Zwei Schritte, in dieser
+            Reihenfolge:
+          </p>
+          <ol className="mt-2 ml-5 list-decimal space-y-1 text-left">
+            <li>
+              Unter <a href="/einstellungen">Einstellungen → Tools / AdSense</a> einen
+              <strong> Registry-Sync-Token</strong> setzen und speichern.
+            </li>
+            <li>
+              <code>https://tools.tracht-digital.de/_setup</code> aufrufen, denselben Token
+              eintragen und den Schritt <strong>„Tool-Katalog übertragen"</strong> ausführen.
+            </li>
+          </ol>
+          <p className="mt-2">
+            Ohne Schritt 1 lehnt die Registry die Übertragung ab (HTTP 503). Danach
+            erscheinen die Tools hier und lassen sich einzeln steuern.
+          </p>
+        </div>
       ) : (
         <div className="overflow-x-auto">
           <table className="tds-table">

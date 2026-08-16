@@ -158,6 +158,42 @@ describe("loading", () => {
     expect(screen.queryByRole("button", { name: /anlegen|hinzufügen/i })).toBeNull();
   });
 
+  it("never claims the catalog arrives on its own", async () => {
+    // The previous copy said the tools "erscheinen automatisch, sobald die
+    // Website gebaut wurde". Nothing did that, and nothing could: the build's
+    // sync hung on TOOLS_REGISTRY_TOKEN, which no workflow exported and which
+    // Vite cannot inject without a PUBLIC_ prefix. The operator waited on an
+    // automatism that did not exist, which is exactly how this page stayed
+    // empty for the platform's whole life. The old assertion here only matched
+    // /Noch keine Tools/ and so never noticed.
+    await open([]);
+    await screen.findByText(/Noch keine Tools/);
+    const text = document.body.textContent ?? "";
+
+    // The exact promise, not the word: the copy legitimately says the catalog
+    // is "nicht automatisch übertragen", which is the point.
+    expect(text).not.toMatch(/erscheinen\s+automatisch/i);
+    expect(text).toMatch(/nicht automatisch/i);
+  });
+
+  it("names both transfer steps, in the order the registry accepts them", async () => {
+    // POST /tools/registry answers 503 until the token is stored, so telling
+    // someone to run the wizard first sends them into an error with no cause.
+    await open([]);
+    await screen.findByText(/Noch keine Tools/);
+    const text = document.body.textContent ?? "";
+
+    expect(text).toMatch(/Registry-Sync-Token/);
+    expect(text).toMatch(/_setup/);
+    expect(text).toMatch(/503/);
+    // Token step must be described before the wizard step.
+    expect(text.indexOf("Registry-Sync-Token")).toBeLessThan(text.indexOf("_setup"));
+
+    // And the settings page has to be reachable, not just named.
+    const link = screen.getByRole("link", { name: /Einstellungen/i });
+    expect(link.getAttribute("href")).toBe("/einstellungen");
+  });
+
   it("names the reason when the user is not an admin", async () => {
     respond(/^\/admin\/tools$/, {}, 403, "GET");
     render(<ToolsManage />);

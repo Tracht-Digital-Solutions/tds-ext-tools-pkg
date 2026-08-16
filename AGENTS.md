@@ -15,10 +15,23 @@ AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-
 ## Architecture
 
 - **The tool list is owned by the frontend packs, not this backend.** It flows in
-  via `POST /tools/registry` (token-gated), which the `tds-tools-frontend` build calls with
-  its composed catalog. `ToolConfigRepository::upsertRegistry()` inserts missing
-  rows with the manifest defaults and refreshes name/category, but **never
-  clobbers an admin override** (`ON DUPLICATE KEY UPDATE name, category` only).
+  via `POST /tools/registry` (token-gated) with the site's composed catalog.
+  `ToolConfigRepository::upsertRegistry()` inserts missing rows with the manifest
+  defaults and refreshes name/category, but **never clobbers an admin override**
+  (`ON DUPLICATE KEY UPDATE name, category` only).
+- **Nothing pushes that catalog automatically — a human runs the transfer.** The
+  `tds-tools-frontend` *build* used to, gated on `TOOLS_REGISTRY_TOKEN`; no
+  workflow ever exported it, and without a `PUBLIC_` prefix Vite would not have
+  injected it anyway, so the sync never ran once and `tools_config` stayed empty
+  for the platform's whole life. Nothing went red: the sync fails soft by design.
+  The dead path is gone from `catalog.ts` (2026-08-16). The transfer is now
+  host-side: the site publishes `dist/tools-catalog.json` and
+  `/_setup/install.php` posts it with the token typed into its form.
+  **Two steps, in order** — store the token here first (*Einstellungen → Tools*),
+  because `POST /tools/registry` answers **503** until it exists, and a wizard run
+  before that lands in an error with no visible cause. `ToolsManage`'s empty state
+  spells both steps out; it used to promise the tools would "appear automatically",
+  which is precisely why nobody went looking. Its test now pins that wording.
 - **`GET /tools/catalog` is public** (unauthenticated) — the site bakes it at
   build time (+ a runtime fallback). Every other route is `tools:manage` except
   the token-gated registry sync.

@@ -31,7 +31,7 @@ const api = apiFetch;
  * So the operator was told to wait for something that could not happen, and the
  * sync fails soft by design, so nothing anywhere went red.
  *
- * The transfer is host-side now (`/_setup/install.php` posts
+ * The transfer is host-side now (`/install` posts
  * `dist/tools-catalog.json`), and it needs two steps IN ORDER — the registry
  * answers 503 until the token exists in the panel. Naming both, in order, is
  * the difference between a dead page and a five-minute task.
@@ -127,7 +127,7 @@ export default function ToolsManage() {
               <strong> Registry-Sync-Token</strong> setzen und speichern.
             </li>
             <li>
-              <code>https://tools.tracht-digital.de/_setup</code> aufrufen, denselben Token
+              <code>https://tools.tracht-digital.de/install</code> aufrufen, denselben Token
               eintragen und den Schritt <strong>„Tool-Katalog übertragen"</strong> ausführen.
             </li>
           </ol>

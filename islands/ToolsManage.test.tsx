@@ -184,10 +184,16 @@ describe("loading", () => {
     const text = document.body.textContent ?? "";
 
     expect(text).toMatch(/Registry-Sync-Token/);
-    expect(text).toMatch(/_setup/);
+    expect(text).toMatch(/tools\.tracht-digital\.de\/install/);
     expect(text).toMatch(/503/);
     // Token step must be described before the wizard step.
-    expect(text.indexOf("Registry-Sync-Token")).toBeLessThan(text.indexOf("_setup"));
+    // Matched on the FULL host, never the bare word: "install" appears in
+    // ordinary German panel copy far more readily than "_setup" ever did, so
+    // a substring match here would find an earlier occurrence and invert the
+    // ordering assertion without failing.
+    expect(text.indexOf("Registry-Sync-Token")).toBeLessThan(
+      text.indexOf("tools.tracht-digital.de/install"),
+    );
 
     // And the settings page has to be reachable, not just named.
     const link = screen.getByRole("link", { name: /Einstellungen/i });

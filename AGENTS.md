@@ -26,7 +26,7 @@ AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-
   for the platform's whole life. Nothing went red: the sync fails soft by design.
   The dead path is gone from `catalog.ts` (2026-08-16). The transfer is now
   host-side: the site publishes `dist/tools-catalog.json` and
-  `/_setup/install.php` posts it with the token typed into its form.
+  `/install` posts it with the token typed into its form.
   **Two steps, in order** — store the token here first (*Einstellungen → Tools*),
   because `POST /tools/registry` answers **503** until it exists, and a wizard run
   before that lands in an error with no visible cause. `ToolsManage`'s empty state

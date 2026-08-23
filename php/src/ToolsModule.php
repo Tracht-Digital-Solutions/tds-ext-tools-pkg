@@ -82,7 +82,18 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
     public function register(App $app): void
     {
         $c = $app->getContainer();
-        if ($c !== null && !$c->has(ToolConfigRepository::class)) {
+        // NEVER guard these with `!$c->has(X)`. PHP-DI answers `has()` from its
+        // definition sources, and autowiring is one of them: for any *concrete,
+        // instantiable* class the answer is always true, whether or not anyone
+        // ever bound it. So the guard skipped every binding below and the
+        // container silently autowired instead — invisible for the repositories
+        // (their only argument is the bound PDO, so the object is identical),
+        // fatal for the StripeClient, whose constructor takes a string PHP-DI
+        // cannot guess: the premium checkout and webhook routes answered 500
+        // with `Parameter $secretKey of __construct() has no value defined or
+        // guessable`, and the settings-store factory never ran at all. The
+        // module owns these classes; nothing else defines them.
+        if ($c !== null) {
             $c->set(ToolConfigRepository::class, static fn ($c) => new ToolConfigRepository($c->get(PDO::class)));
             $c->set(EntitlementRepository::class, static fn ($c) => new EntitlementRepository($c->get(PDO::class)));
             $c->set(StripeClient::class, static function ($c): StripeClient {

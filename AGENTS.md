@@ -182,3 +182,30 @@ by `"<METHOD> <pattern>"`. Two things to know before editing a route:
   renaming a route without touching `docs/api.php` fails there. That is the
   point: prose next to code rots, and a reference full of confident, wrong
   detail is worse than the bare route list it replaced.
+
+## Site keys (`SiteKeyProtected`) + registry auth
+
+`ToolsModule` implements the contract's optional `SiteKeyProtected` and declares
+`/tools/catalog` — what the static tools site bakes at build time.
+
+Two exclusions matter more than the inclusion:
+
+- **`/tools/registry` is NOT declared.** It carries its own credential check;
+  going through the middleware as well would reject a legacy `registry_token`
+  call before the route ever saw it, breaking the one path an operator mid-setup
+  is most likely to be on.
+- **`/tools/entitlement` and `/tools/checkout` are NOT declared.** They run in a
+  visitor's browser on the public site, which has no key and never will. Listing
+  one would turn `enforce` into a paywall that rejects paying customers.
+
+`POST /tools/registry` now accepts **two** credentials. A **site key** for the
+`tools` site is the way forward — issued in the panel, revocable, and it records
+when it was last used. The legacy `registry_token` keeps working for one
+release, because a human types it into the `/install` wizard and an operator
+mid-setup should not be stopped by an upgrade. The unconfigured 503 names both,
+since the old text sent people to *Einstellungen → Tools* even when the intended
+fix was a key.
+
+**The site id is passed to `verify()`, never read from the body.** A key belongs
+to exactly one site; trusting a `site` field sent alongside the key would let the
+blog's key rewrite the tools catalog. `ToolsModuleTest` pins both directions.

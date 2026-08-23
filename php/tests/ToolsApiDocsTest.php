@@ -110,4 +110,60 @@ final class ToolsApiDocsTest extends TestCase
 
         self::assertSame([], $missing, 'Undokumentierte Pfadparameter');
     }
+    /**
+     * Every declared site-key prefix must still cover a route this module
+     * mounts.
+     *
+     * This is the same class of rot as the doc parity above, with a worse
+     * symptom: a prefix that no longer matches anything does not produce a
+     * blank row, it produces an **unprotected route** that looks exactly like a
+     * route somebody chose not to protect. Nothing else anywhere would notice.
+     */
+    public function testEverySiteKeyPrefixStillCoversAMountedRoute(): void
+    {
+        $mounted = self::mountedRoutes();
+        $orphans = [];
+
+        foreach ((new ToolsModule())->siteKeyRoutes() as $prefix) {
+            $covers = false;
+            foreach ($mounted as $route) {
+                $path = substr($route, (int) strpos($route, ' ') + 1);
+                if ($path === $prefix || str_starts_with($path, $prefix . '/')) {
+                    $covers = true;
+                    break;
+                }
+            }
+            if (!$covers) {
+                $orphans[] = $prefix;
+            }
+        }
+
+        self::assertSame([], $orphans, 'Site-Key-Präfixe ohne passende Route');
+    }
+
+    /**
+     * A site-key prefix must not cover an ADMIN route.
+     *
+     * `ModuleRegistry` throws on a prefix that STARTS with `/admin`. This
+     * catches the other direction — a prefix so broad that an admin route
+     * happens to fall under it — which would turn a CI secret into panel
+     * access.
+     */
+    public function testNoSiteKeyPrefixCoversAnAdminRoute(): void
+    {
+        $covered = [];
+        foreach (self::mountedRoutes() as $route) {
+            $path = substr($route, (int) strpos($route, ' ') + 1);
+            if (!str_starts_with($path, '/admin')) {
+                continue;
+            }
+            foreach ((new ToolsModule())->siteKeyRoutes() as $prefix) {
+                if ($path === $prefix || str_starts_with($path, $prefix . '/')) {
+                    $covered[] = $path;
+                }
+            }
+        }
+
+        self::assertSame([], $covered, 'Admin-Routen dürfen nie per Site-Key erreichbar sein');
+    }
 }

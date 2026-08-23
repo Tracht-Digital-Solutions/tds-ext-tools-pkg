@@ -19,6 +19,8 @@ use Tds\Frontend\Contract\ApiDocSource;
 use Tds\Frontend\Contract\PermissionDef;
 use Tds\Frontend\Contract\SettingDef;
 use Tds\Frontend\Contract\SettingsStore;
+use Tds\Frontend\Contract\SiteKeyProtected;
+use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
 
 /**
@@ -36,7 +38,7 @@ use Tds\Frontend\Contract\UserContext;
  * (AdSense, rebuild, registry token) via the core {@see SettingsStore} (ns=tools),
  * DB-first with env fallback.
  */
-final class ToolsModule extends AbstractModule implements ApiDocSource
+final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyProtected
 {
     private const NS = 'tools';
 
@@ -102,16 +104,39 @@ final class ToolsModule extends AbstractModule implements ApiDocSource
         });
 
         // --- Registry sync (token-gated; the site build upserts its packs) ----
+        //
+        // TWO credentials are accepted. A **site key** for the `tools` site is
+        // the way forward: it is issued in the panel, revocable, records when it
+        // was last used, and is the same thing every other public site presents.
+        // The legacy `registry_token` keeps working for one release, because the
+        // token is typed into the /install wizard by a human and an operator
+        // mid-setup should not be stopped by an upgrade.
+        //
+        // The site id is passed to verify() rather than read from the body: a
+        // key belongs to exactly one site, and trusting a `site` field sent
+        // alongside the key would let the blog's key write the tools catalog.
         $app->post('/tools/registry', function (Request $req, Response $res) use ($c): Response {
+            $body = (array) $req->getParsedBody();
+            $provided = (string) ($body['token'] ?? ($body['key'] ?? self::bearer($req)));
+
+            if ($provided !== '' && self::siteKeys($c)?->verify($provided, 'tools') !== null) {
+                $tools = is_array($body['tools'] ?? null) ? $body['tools'] : [];
+                $n = $c->get(ToolConfigRepository::class)->upsertRegistry($tools);
+                return self::json($res, ['ok' => true, 'synced' => $n]);
+            }
+
             $configured = self::store($c)?->getSecret(self::NS, 'registry_token');
             if ($configured === null || $configured === '') {
                 $configured = self::env('TOOLS_REGISTRY_TOKEN', '');
             }
             if ($configured === '') {
-                return self::json($res, ['error' => 'Registry sync not configured'], 503);
+                // Neither credential exists. Named as such: the older message
+                // ("Registry sync not configured") sent an operator to the tools
+                // settings even when the intended fix was a site key.
+                return self::json($res, [
+                    'error' => 'Registry sync not configured — Site-Key oder Registry-Token hinterlegen',
+                ], 503);
             }
-            $body = (array) $req->getParsedBody();
-            $provided = (string) ($body['token'] ?? self::bearer($req));
             if (!hash_equals($configured, $provided)) {
                 return self::json($res, ['error' => 'Unauthorized'], 401);
             }
@@ -283,6 +308,20 @@ final class ToolsModule extends AbstractModule implements ApiDocSource
         return $c->has(SettingsStore::class) ? $c->get(SettingsStore::class) : null;
     }
 
+    /**
+     * The site-key verifier, or null on a base that predates it or has no
+     * database. Null-safe on purpose: this module must keep composing against an
+     * older core, and the legacy registry token below is then the only path.
+     */
+    private static function siteKeys(ContainerInterface $c): ?SiteKeys
+    {
+        try {
+            return $c->has(SiteKeys::class) ? $c->get(SiteKeys::class) : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     /** Env read with explicit default — avoids the `?? getenv() ?: $d` precedence trap ("0"/""). */
     private static function env(string $key, string $default): string
     {
@@ -316,5 +355,25 @@ final class ToolsModule extends AbstractModule implements ApiDocSource
     public function apiDocs(): array
     {
         return require __DIR__ . '/../docs/api.php';
+    }
+
+    /**
+     * The catalog the static tools site bakes at build time.
+     *
+     * `/tools/registry` is deliberately NOT listed: it carries its own
+     * credential check, and going through the middleware as well would reject a
+     * legacy `registry_token` call before the route ever saw it — breaking the
+     * one path an operator mid-setup is most likely to be on.
+     *
+     * Nor is `/tools/entitlement` or `/tools/checkout`: those run in a
+     * visitor's browser on the public site, which has no key and never will.
+     * Listing one would turn `enforce` into a paywall that rejects paying
+     * customers.
+     *
+     * @return list<string>
+     */
+    public function siteKeyRoutes(): array
+    {
+        return ['/tools/catalog'];
     }
 }

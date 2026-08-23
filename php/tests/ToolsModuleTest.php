@@ -11,6 +11,8 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
 use Tds\Ext\Tools\ToolsModule;
 use Tds\Frontend\Contract\ModuleRegistry;
+use Tds\Frontend\Contract\SiteKeyIdentity;
+use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
 
 /** Minimal UserContext double for RBAC tests. */
@@ -33,14 +35,47 @@ final class FakeUser implements UserContext
     public function activeCompanyId(): ?int { return null; }
 }
 
+/** A SiteKeys double: one valid plaintext, bound to one site. */
+final class FakeSiteKeys implements SiteKeys
+{
+    /** The site the caller demanded — asserted, because trusting the body is the bug. */
+    public ?string $demandedSite = null;
+
+    public function __construct(
+        private readonly string $valid,
+        private readonly string $site,
+    ) {
+    }
+
+    public function verify(string $key, ?string $site = null, ?string $origin = null): ?SiteKeyIdentity
+    {
+        $this->demandedSite = $site;
+        if (!hash_equals($this->valid, $key)) {
+            return null;
+        }
+        if ($site !== null && $site !== $this->site) {
+            return null;
+        }
+        return new SiteKeyIdentity(1, $this->site, $this->site, '');
+    }
+
+    public function enforcement(): string
+    {
+        return 'off';
+    }
+}
+
 final class ToolsModuleTest extends TestCase
 {
-    private function app(UserContext $user, ?PDO $pdo = null)
+    private function app(UserContext $user, ?PDO $pdo = null, ?SiteKeys $siteKeys = null)
     {
         $container = new Container();
         $container->set(UserContext::class, $user);
         if ($pdo !== null) {
             $container->set(PDO::class, $pdo);
+        }
+        if ($siteKeys !== null) {
+            $container->set(SiteKeys::class, $siteKeys);
         }
         AppFactory::setContainer($container);
         $app = AppFactory::create();
@@ -77,9 +112,55 @@ final class ToolsModuleTest extends TestCase
 
     public function testRegistrySyncUnconfiguredReturns503(): void
     {
-        // No registry_token in settings/env → the endpoint refuses before any DB access.
+        // Neither a site key nor a registry_token → the endpoint refuses before
+        // any DB access.
         $app = $this->app(new FakeUser());
         $res = $app->handle($this->request('POST', '/tools/registry', ['tools' => []]));
+        self::assertSame(503, $res->getStatusCode());
+    }
+
+    public function testRegistrySyncNamesBothCredentialsWhenUnconfigured(): void
+    {
+        // The old message sent the operator to Einstellungen → Tools even when
+        // the intended fix is a site key. A 503 whose text points at the wrong
+        // screen costs more than no text.
+        $app = $this->app(new FakeUser());
+        $res = $app->handle($this->request('POST', '/tools/registry', ['tools' => []]));
+        self::assertStringContainsString('Site-Key', (string) $res->getBody());
+    }
+
+    public function testRegistrySyncAcceptsAToolsSiteKey(): void
+    {
+        $keys = new FakeSiteKeys('tdsk_tools_valid', 'tools');
+        $app = $this->app(new FakeUser(), pdo: $this->pdoOrSkip(), siteKeys: $keys);
+
+        $res = $app->handle($this->request('POST', '/tools/registry', [
+            'key' => 'tdsk_tools_valid',
+            'tools' => [['id' => 'qr-code', 'name' => 'QR', 'category' => 'marketing']],
+        ]));
+
+        self::assertSame(200, $res->getStatusCode());
+        self::assertStringContainsString('"synced"', (string) $res->getBody());
+        self::assertSame('tools', $keys->demandedSite, 'the site must be demanded, not read from the body');
+    }
+
+    public function testRegistrySyncRejectsAKeyBelongingToAnotherSite(): void
+    {
+        // The blog's key must not be able to rewrite the tools catalog. This is
+        // why the site is passed to verify() instead of trusted from the body.
+        $app = $this->app(
+            new FakeUser(),
+            pdo: $this->pdoOrSkip(),
+            siteKeys: new FakeSiteKeys('tdsk_blog_valid', 'blog'),
+        );
+
+        $res = $app->handle($this->request('POST', '/tools/registry', [
+            'key' => 'tdsk_blog_valid',
+            'site' => 'tools',
+            'tools' => [],
+        ]));
+
+        // Falls through to the legacy token path, which is unconfigured here.
         self::assertSame(503, $res->getStatusCode());
     }
 

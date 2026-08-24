@@ -1,8 +1,11 @@
 ---
 // The /tools-verwaltung page, injected into the host build via the contract's
-// route slot. Hosts the tool-catalog management island (enable / login / premium
-// / price per tool + a manual rebuild).
+// route slot. Two surfaces, deliberately on one page: the catalog (which tools
+// exist and on what terms) and the copy (what each tool page says). They are
+// the same job seen from two sides, and splitting them would put a second entry
+// in a nav that already has one for Tools.
 import ToolsManage from "../islands/ToolsManage.tsx";
+import ToolGuides from "../islands/ToolGuides.tsx";
 ---
 
 <section class="tds-page">
@@ -15,4 +18,17 @@ import ToolsManage from "../islands/ToolsManage.tsx";
     Website aus.
   </p>
   <ToolsManage client:load />
+
+  <div class="tds-settings-section">
+    <h2 class="tds-page__title">Texte der Tool-Seiten</h2>
+    <p class="text-sm opacity-70">
+      Name, Beschreibung, SEO-Felder und der Ratgeber unter jedem Werkzeug —
+      Einleitung, Anwendungsfälle, Schritte, häufige Fragen und der
+      Datenschutzhinweis. Gespeicherte Texte <strong>ersetzen</strong> den im
+      Repository mitgelieferten; ein leeres Feld nimmt die Übersteuerung zurück.
+      Nach dem Speichern wird der Seiten-Cache der betroffenen Tool-Seite neu
+      gebaut, ein Deploy ist dafür nicht nötig.
+    </p>
+    <ToolGuides client:load />
+  </div>
 </section>

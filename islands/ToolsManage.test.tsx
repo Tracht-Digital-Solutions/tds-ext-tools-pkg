@@ -47,6 +47,18 @@ function holdRequests(match: RegExp) {
  */
 const pathOf = (url: string) => String(url).replace(/^https?:\/\/[^/]+/i, "");
 
+/**
+ * This island's own calls, in order, with tds-shared's runtime-config read
+ * dropped.
+ *
+ * Filtered by that PATH and deliberately NOT by the API host: selecting the
+ * call because it is on api.tracht-digital.de would make the "it is absolute"
+ * assertion below prove itself. A relative `fetch("/admin/tools")` still lands
+ * in this list — and still fails, which is the point of that assertion.
+ */
+const apiCalls = (m: { mock: { calls: unknown[][] } }) =>
+  m.mock.calls.filter((c) => pathOf(String(c[0])) !== "/tds-runtime.json");
+
 function respond(match: RegExp, body: unknown, status = 200, method?: string) {
   handlers.unshift((url, init) => {
     if (!match.test(pathOf(url))) return undefined;
@@ -126,13 +138,13 @@ describe("loading", () => {
   it("reads the admin catalog with credentials", async () => {
     await open();
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    expect(pathOf(fetchMock.mock.calls[0]![0] as string)).toBe("/admin/tools");
+    expect(pathOf(apiCalls(fetchMock)[0]![0] as string)).toBe("/admin/tools");
     // Absolute, on the API host. Every other assertion here matches the PATH,
     // which a relative fetch satisfies too — so this is the one that fails if
     // the call ever goes back to the product's own origin (whose SPA fallback
     // answers 200 + HTML and turns into a silent empty state).
-    expect(String(fetchMock.mock.calls[0]![0]).startsWith("https://api.tracht-digital.de/")).toBe(true);
-    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ credentials: "include" });
+    expect(String(apiCalls(fetchMock)[0]![0]).startsWith("https://api.tracht-digital.de/")).toBe(true);
+    expect(apiCalls(fetchMock)[0]![1]).toMatchObject({ credentials: "include" });
   });
 
   it("shows a loading line until the catalog arrives", () => {

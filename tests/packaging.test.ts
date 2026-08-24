@@ -35,7 +35,16 @@ const specifiers = [
 ];
 
 /** The minor line the admin product caret-pins this package at. */
-const PINNED_MINOR_LINE = "0.1";
+/**
+ * The major line `tds-admin-frontend` caret-pins.
+ *
+ * CalVer since 26.7.0. This used to be a MINOR line (`0.1`), because under 0.x a
+ * caret is minor-locked — `^0.1.1` means `>=0.1.1 <0.2.0`, so a minor bump here
+ * silently stopped the product picking the package up. At 26.x a caret is the
+ * ordinary kind, `^26.7.0` = `>=26.7.0 <27.0.0`, so the line that must not be
+ * crossed without repinning the product is the MAJOR one.
+ */
+const PINNED_MAJOR_LINE = "26";
 
 /** `@scope/name/pages/Index.astro` → `pages/Index.astro` */
 const subpath = (spec: string) => spec.slice(pkg.name.length + 1);
@@ -101,16 +110,12 @@ describe("dependency hygiene", () => {
     expect(range, "a file:/link: range never resolves for a consumer").not.toMatch(/^(file:|link:)/);
   });
 
-  it("stays inside the minor line the products caret-pin", () => {
-    // tds-admin-frontend depends on this package with a CARET (`^0.1.1`). Under
-    // 0.x a caret means `>=0.1.1 <0.2.0`, so bumping the MINOR here silently
-    // stops the product picking it up until its range is widened by hand.
-    //
-    // NOTE: the root CLAUDE.md says extensions stay in `0.1.x`. That is not
-    // universal — support-tickets is pinned at 0.7.x and contact-tickets at
-    // 0.2.x. What matters is that an extension never leaves the line its
-    // consumers pin.
-    expect(pkg.version.startsWith(`${PINNED_MINOR_LINE}.`)).toBe(true);
+  it("stays inside the major line the products caret-pin", () => {
+    // tds-admin-frontend depends on this package with a caret. Leaving the line
+    // its range covers does not fail anything here — the product simply keeps
+    // installing the old version, silently, until someone widens the range by
+    // hand. That is the whole failure mode this asserts against.
+    expect(pkg.version.startsWith(`${PINNED_MAJOR_LINE}.`)).toBe(true);
   });
 
   it("exposes the scripts CI runs", () => {

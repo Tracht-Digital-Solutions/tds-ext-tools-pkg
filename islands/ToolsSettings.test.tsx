@@ -39,6 +39,30 @@ const KEYS = [
   "rebuild_workflow",
   "rebuild_token",
   "registry_token",
+  // The page cache and the premium layer were declared in the PHP Module from
+  // the start and rendered by nothing, so both were .env-only on a host where
+  // nobody edits .env. This list is what stops that recurring: the save test
+  // compares it to the posted set exactly, in both directions.
+  "cache_url",
+  "cache_token",
+  "currency",
+  "checkout_success_url",
+  "checkout_cancel_url",
+  "stripe_secret_key",
+  "stripe_webhook_secret",
+];
+
+/**
+ * The keys that must be stored encrypted. Derived, not counted: the assertions
+ * below used to hard-code "two masked hints", which silently became wrong the
+ * moment the cache and Stripe blocks gained a UI.
+ */
+const SECRET_KEYS = [
+  "rebuild_token",
+  "registry_token",
+  "cache_token",
+  "stripe_secret_key",
+  "stripe_webhook_secret",
 ];
 
 /** Outcomes are toasts now — collected off the `tds:toast` bus. */
@@ -145,9 +169,9 @@ describe("loading", () => {
     expect(box("Workflow").value).toBe("release.yml");
   });
 
-  it("defaults the workflow to dev.yml", async () => {
+  it("defaults the workflow to release.yml", async () => {
     await open();
-    expect(box("Workflow").value).toBe("dev.yml");
+    expect(box("Workflow").value).toBe("release.yml");
   });
 
   it("leaves the repo empty rather than guessing one", async () => {
@@ -156,9 +180,9 @@ describe("loading", () => {
     expect(box("Repo (owner/name)").value).toBe("");
   });
 
-  it("reports BOTH secrets as unconfigured when neither is set", async () => {
+  it("reports EVERY secret as unconfigured when none is set", async () => {
     await open();
-    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(2);
+    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(SECRET_KEYS.length);
   });
 
   it("shows only the last four characters of a configured secret", async () => {
@@ -174,9 +198,11 @@ describe("loading", () => {
     await open();
     expect(screen.getByText("(konfiguriert (…aa11))")).toBeTruthy();
     expect(screen.getByText("(konfiguriert (…bb22))")).toBeTruthy();
+    // The three credentials this response does not mention stay unconfigured.
+    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(SECRET_KEYS.length - 2);
   });
 
-  it("keeps the two secrets' hints apart", async () => {
+  it("keeps each secret's hint apart", async () => {
     // One shared hint would make a configured registry token look like a
     // configured rebuild token, and vice versa.
     getReply = {
@@ -185,7 +211,7 @@ describe("loading", () => {
     };
     await open();
     expect(screen.getByText("(konfiguriert (…bb22))")).toBeTruthy();
-    expect(screen.getByText("(nicht konfiguriert)")).toBeTruthy();
+    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(SECRET_KEYS.length - 1);
   });
 
   it("copes with a configured secret that reports no last4", async () => {
@@ -203,7 +229,7 @@ describe("loading", () => {
       body: { settings: [{ key: "rebuild_token", secret: true, configured: false, last4: null }] },
     };
     await open();
-    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(2);
+    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(SECRET_KEYS.length);
   });
 
   it("never renders a secret value even if the API leaks one", async () => {
@@ -311,13 +337,13 @@ describe("saving", () => {
     expect(setting("rebuild_token").value).toBe("");
   });
 
-  it("marks BOTH tokens as secrets and nothing else", async () => {
+  it("marks EVERY credential as a secret and nothing else", async () => {
     // A token stored with secret:false lands in the DB in plaintext.
     const u = await open();
     await u.click(screen.getByRole("button", { name: "Speichern" }));
     await waitFor(() => expect(put()).toBeDefined());
     for (const s of saved()) {
-      expect(s.secret, `${s.key}`).toBe(s.key === "rebuild_token" || s.key === "registry_token");
+      expect(s.secret, `${s.key}`).toBe(SECRET_KEYS.includes(s.key));
     }
   });
 
@@ -351,13 +377,13 @@ describe("saving", () => {
     expect(setting("rebuild_token").value).toBe("ghp_padded");
   });
 
-  it("falls back to dev.yml rather than saving an empty workflow", async () => {
+  it("falls back to release.yml rather than saving an empty workflow", async () => {
     // An empty workflow name makes every rebuild dispatch 404.
     const u = await open();
     await u.clear(box("Workflow"));
     await u.click(screen.getByRole("button", { name: "Speichern" }));
     await waitFor(() => expect(put()).toBeDefined());
-    expect(setting("rebuild_workflow").value).toBe("dev.yml");
+    expect(setting("rebuild_workflow").value).toBe("release.yml");
   });
 
   it("keeps an explicitly chosen workflow", async () => {

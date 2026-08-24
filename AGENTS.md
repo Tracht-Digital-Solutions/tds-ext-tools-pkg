@@ -7,8 +7,10 @@ extension model.
 ## What this is
 
 The backend + admin UI for the public tools platform. The public site
-(`tds-tools-frontend`) is a separate static repo; this extension owns the catalog config,
-AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-pkg`
+(`tds-tools-frontend`) is a separate repo — server-rendered behind a page cache
+since 2026-08-24, not static; this extension owns the catalog config, AdSense
+config, the panel-editable tool guides, registry sync and both rebuild triggers
+(CI build and page cache). Modelled on `tds-ext-billing-pkg`
 (Stripe/settings/webhook patterns) + `tds-ext-blog-cms-pkg` (`RebuildTrigger`) +
 `tds-ext-contact-tickets-pkg` (public + token-gated endpoints).
 
@@ -32,19 +34,61 @@ AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-
   before that lands in an error with no visible cause. `ToolsManage`'s empty state
   spells both steps out; it used to promise the tools would "appear automatically",
   which is precisely why nobody went looking. Its test now pins that wording.
-- **`GET /tools/catalog` is public** (unauthenticated) — the site bakes it at
-  build time (+ a runtime fallback). Every other route is `tools:manage` except
-  the token-gated registry sync.
+- **`GET /tools/catalog` and `GET /tools/guides` are public** (site-key gated,
+  see `siteKeyRoutes()`) — the site reads them while rendering and stores the
+  result in its page cache. Every other route is `tools:manage`, except the
+  token-gated registry sync, the two session-gated premium routes and the
+  signature-verified Stripe webhook.
+  **Both fail soft on the site**, which is the trap: a 500 here is
+  indistinguishable from "no overrides", so the tool page renders its committed
+  text and the deploy looks healthy. Anything broken behind these two routes has
+  to be caught by a test in this repo, because no other surface will report it.
 - **Config via the core `SettingsStore` (ns=`tools`), DB-first + env fallback.**
   AdSense (publisher id + slots + master switch), the rebuild target
   (repo/workflow/token), and the registry-sync token. Secrets AES-GCM at rest;
   admin edits them through the core `/admin/settings/tools` route (the FE settings
   island), not a module route.
-- **An admin override change fires a rebuild** of the static site
-  (`RebuildTrigger`, best-effort `workflow_dispatch`, never throws).
+- **An admin override change fires a CI rebuild** of the site
+  (`RebuildTrigger`, best-effort `workflow_dispatch`, never throws), while a
+  guide edit fires a **page-cache** rebuild through the contract's `SiteCache`
+  (`fireCache()`). Two different jobs: the first ships code, the second
+  re-renders pages from content already saved. Neither ever fails a save.
 
 ## Gotchas
 
+- **A missing `use` statement is silent, and it took the whole guides feature
+  down for the life of the release (fixed 26.7.0).** `ToolsModule.php` is in
+  `namespace Tds\Ext\Tools`, and an unqualified class name resolves against
+  *that* namespace. Four were missing, with three different symptoms:
+  `ToolGuideRepository` (really `…\Tools\Domain\…`) made the DI factory throw
+  *Class not found*, so all four guide routes fatalled; `Throwable` resolved to
+  `Tds\Ext\Tools\Throwable`, so the fail-soft `catch` on the public route
+  matched nothing and a DB hiccup became a 500; and `SiteCache` / `CacheEvent`
+  resolved into this namespace too, where `$c->has()` on a class that does not
+  exist is permanently false — making `fireCache()` an unconditional no-op, so
+  saving a guide answered `{"ok":true}` and never rebuilt the page.
+  Nothing was red: no test touched a guide or a cache route, the doc-parity test
+  compares only method + pattern, and the public site turns any non-OK response
+  into "no overrides" and renders its committed text. `X::class` is a
+  compile-time string, so even a wholly wrong FQCN costs nothing until something
+  resolves it. **`php/tests/ClassReferencesTest.php` now walks every class
+  reference in `php/src` with PHP's own tokenizer and asserts it resolves.** It
+  uses the lexer rather than a regex on purpose: the first version stripped
+  `//` comments before strings, ate the `//` inside a URL, left an unterminated
+  quote, swallowed 80% of the file and then reported it clean.
+- **The rebuild workflow default is `release.yml`, not `dev.yml`.**
+  `tds-tools-frontend` deleted its `dev.yml` on 2026-08-24 when the deploy
+  stopped running on every push. `RebuildTrigger` is best-effort and never
+  throws, so the stale default made every catalog-change dispatch 404 in
+  silence. If that workflow is renamed again, this default and
+  `islands/ToolsSettings.tsx` both have to follow.
+- **Every declared setting needs a field in `ToolsSettings.tsx`.** The manifest
+  registers a *custom* settings island, so the generic settings UI never renders
+  these keys — a `SettingDef` with no matching input is invisible, and the
+  operator's only route to it is editing `.env` on the host. Seven were in that
+  state (page cache + the entire Stripe layer). `ToolsSettings.test.tsx`
+  compares the posted key set against `KEYS` in both directions, which is what
+  makes a forgotten field fail rather than hide.
 - **Never guard a container binding with `!$c->has(X::class)` — the premium
   checkout and the Stripe webhook 500'd because of it.** PHP-DI answers `has()`
   out of its definition sources, and *autowiring is one of them*: for any
@@ -116,8 +160,12 @@ AdSense config, registry sync and rebuild trigger. Modelled on `tds-ext-billing-
 ## Tests
 
 ```bash
-npm run test:run    # vitest, 122 tests (jsdom per-file via a @vitest-environment docblock)
+npm run test:run    # vitest, 134 tests (jsdom per-file via a @vitest-environment docblock)
+composer test       # phpunit, 22 tests (3 skip without TDS_TEST_DB_DSN)
 ```
+
+**Both run in CI as of 26.7.0.** `composer test` always did; `npm run test:run`
+did not, so ~1 200 lines of island tests gated nothing.
 
 - `islands/ToolsManage.test.tsx` — the catalog table. Every row decides what the
   PUBLIC site shows and what it charges, so three things are pinned hard:

@@ -10,18 +10,22 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
 use Tds\Ext\Tools\Domain\EntitlementRepository;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
+use Tds\Ext\Tools\Domain\ToolGuideRepository;
 use Tds\Ext\Tools\Service\RebuildTrigger;
 use Tds\Ext\Tools\Service\StripeClient;
 use Tds\Ext\Tools\Service\StripeException;
 use Tds\Ext\Tools\Service\WebhookVerifier;
 use Tds\Frontend\Contract\AbstractModule;
 use Tds\Frontend\Contract\ApiDocSource;
+use Tds\Frontend\Contract\CacheEvent;
 use Tds\Frontend\Contract\PermissionDef;
 use Tds\Frontend\Contract\SettingDef;
 use Tds\Frontend\Contract\SettingsStore;
+use Tds\Frontend\Contract\SiteCache;
 use Tds\Frontend\Contract\SiteKeyProtected;
 use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
+use Throwable;
 
 /**
  * Backend Module for the public tools platform (tds-tools).
@@ -69,7 +73,11 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             new SettingDef('adsense_slot_tool', 'AdSense Slot (Tool-Seite)', false, 'tools'),
             new SettingDef('registry_token', 'Registry-Sync-Token', true, 'tools'),
             new SettingDef('rebuild_repo', 'Rebuild-Repo (owner/name)', false, 'tools', 'Tracht-Digital-Solutions/tds-tools-frontend'),
-            new SettingDef('rebuild_workflow', 'Rebuild-Workflow', false, 'tools', 'dev.yml'),
+            // release.yml, NOT dev.yml: tds-tools-frontend deleted its dev.yml on
+            // 2026-08-24 when the deploy stopped running on every push. The
+            // dispatch is best-effort and never throws, so the stale default
+            // meant every catalog change 404'd against GitHub in silence.
+            new SettingDef('rebuild_workflow', 'Rebuild-Workflow', false, 'tools', 'release.yml'),
             new SettingDef('rebuild_token', 'Rebuild-Token (GitHub PAT)', true, 'tools'),
             // The page cache of the public site. Separate from the rebuild
             // pair above and NOT interchangeable with it: a rebuild ships code
@@ -399,7 +407,7 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             $token = self::env('TOOLS_REBUILD_TOKEN', '');
         }
         $repo = self::setting($c, 'rebuild_repo', 'TOOLS_REBUILD_REPO', '');
-        $workflow = self::setting($c, 'rebuild_workflow', 'TOOLS_REBUILD_WORKFLOW', 'dev.yml');
+        $workflow = self::setting($c, 'rebuild_workflow', 'TOOLS_REBUILD_WORKFLOW', 'release.yml');
         (new RebuildTrigger($token))->trigger($repo !== '' ? $repo : null, $workflow, $reason);
     }
 

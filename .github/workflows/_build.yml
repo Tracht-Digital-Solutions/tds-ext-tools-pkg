@@ -86,6 +86,11 @@ jobs:
         # controls had drifted across the packages before this step existed.
         run: npm run lint:primitives
 
+      - name: Test (vitest)
+        # phpunit runs above; the island suite did not run at all, so ~1 200
+        # lines of admin-UI tests gated nothing.
+        run: npm run test:run
+
       - name: Build
         run: npm run build
 

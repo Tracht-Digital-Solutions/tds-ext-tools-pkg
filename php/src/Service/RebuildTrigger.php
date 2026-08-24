@@ -31,12 +31,13 @@ final class RebuildTrigger
 
     /**
      * Dispatch `repo`'s `workflowFile`. `repo` is "owner/name"; `workflowFile` the
-     * workflow file name (default "dev.yml"). No-op when unconfigured or no repo.
+     * workflow file name (default "release.yml"). No-op when unconfigured or
+     * no repo.
      */
     public function trigger(?string $repo, ?string $workflowFile, string $reason): void
     {
         $repo = trim((string) $repo);
-        $workflowFile = trim((string) ($workflowFile ?: 'dev.yml'));
+        $workflowFile = trim((string) ($workflowFile ?: 'release.yml'));
         if ($this->token === '' || $repo === '') {
             return;
         }

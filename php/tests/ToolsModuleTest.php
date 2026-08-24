@@ -10,7 +10,9 @@ use Slim\Factory\AppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
 use Tds\Ext\Tools\ToolsModule;
+use Tds\Frontend\Contract\CacheEvent;
 use Tds\Frontend\Contract\ModuleRegistry;
+use Tds\Frontend\Contract\SiteCache;
 use Tds\Frontend\Contract\SiteKeyIdentity;
 use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
@@ -65,10 +67,36 @@ final class FakeSiteKeys implements SiteKeys
     }
 }
 
+/**
+ * A SiteCache double that records what it was asked to rebuild.
+ *
+ * Bound under the CONTRACT's FQCN, which is the whole point: the module used to
+ * look the interface up in its own namespace, where nothing is ever bound.
+ */
+final class RecordingSiteCache implements SiteCache
+{
+    /** @var list<array{baseUrl: string, token: ?string, events: CacheEvent[]}> */
+    public array $calls = [];
+
+    public function rebuild(string $baseUrl, ?string $token, array $events): void
+    {
+        $this->calls[] = ['baseUrl' => $baseUrl, 'token' => $token, 'events' => $events];
+    }
+
+    public function isConfigured(string $baseUrl, ?string $token): bool
+    {
+        return $baseUrl !== '' && $token !== null && $token !== '';
+    }
+}
+
 final class ToolsModuleTest extends TestCase
 {
-    private function app(UserContext $user, ?PDO $pdo = null, ?SiteKeys $siteKeys = null)
-    {
+    private function app(
+        UserContext $user,
+        ?PDO $pdo = null,
+        ?SiteKeys $siteKeys = null,
+        ?SiteCache $siteCache = null,
+    ) {
         $container = new Container();
         $container->set(UserContext::class, $user);
         if ($pdo !== null) {
@@ -76,6 +104,9 @@ final class ToolsModuleTest extends TestCase
         }
         if ($siteKeys !== null) {
             $container->set(SiteKeys::class, $siteKeys);
+        }
+        if ($siteCache !== null) {
+            $container->set(SiteCache::class, $siteCache);
         }
         AppFactory::setContainer($container);
         $app = AppFactory::create();
@@ -258,5 +289,88 @@ final class ToolsModuleTest extends TestCase
         self::assertFalse($catalog['qr-code']['enabled'], 'override enabled=false preserved');
         self::assertTrue($catalog['pdf']['is_premium'], 'premium default applied');
         self::assertSame(900, $catalog['pdf']['price_cents'], 'override price preserved across re-sync');
+    }
+
+    // --- The panel-editable guides -----------------------------------------
+    //
+    // This whole feature shipped broken and stayed broken, because nothing here
+    // touched it: four missing `use` statements in ToolsModule.php meant the
+    // repository FQCN did not exist (so every guide route fatalled), the
+    // fail-soft `catch (Throwable)` matched a class in the wrong namespace (so
+    // the public route 500'd instead of returning nothing), and `SiteCache` /
+    // `CacheEvent` resolved into the module's own namespace, making
+    // `fireCache()` an unconditional no-op.
+    //
+    // The public site swallows all of it — a non-OK response means "no
+    // overrides", and the tool page renders its committed text — so the only
+    // way this can be seen is from here. `ClassReferencesTest` pins the general
+    // rule; these pin the behaviour an editor actually depends on.
+
+    public function testPublicGuidesFailsSoftWithoutADatabase(): void
+    {
+        // No PDO is bound, so building the repository must fail — and that
+        // failure has to come back as an empty override set, not a 500. Before
+        // the `use` fix this did not even reach the catch: the container threw
+        // "Class Tds\Ext\Tools\ToolGuideRepository not found" and the
+        // mis-namespaced `catch (Throwable)` let it straight through.
+        $app = $this->app(new FakeUser());
+        $res = $app->handle($this->request('GET', '/tools/guides?lang=de'));
+
+        self::assertSame(200, $res->getStatusCode());
+        self::assertSame('{"guides":{}}', (string) $res->getBody());
+    }
+
+    public function testPublicGuidesFailsSoftForEnglishToo(): void
+    {
+        $app = $this->app(new FakeUser());
+        $res = $app->handle($this->request('GET', '/tools/guides?lang=en'));
+
+        self::assertSame(200, $res->getStatusCode());
+        self::assertSame('{"guides":{}}', (string) $res->getBody());
+    }
+
+    public function testAdminGuideListResolvesTheRepository(): void
+    {
+        // The admin routes have no fail-soft wrapper, so the assertion is
+        // narrow on purpose: whatever else happens, it must not be the
+        // container failing to find a class that is right there on disk.
+        $app = $this->app(new FakeUser(auth: true, admin: true));
+
+        try {
+            $res = $app->handle($this->request('GET', '/admin/tools/guides'));
+            self::assertNotSame(404, $res->getStatusCode());
+        } catch (\Throwable $e) {
+            self::assertStringNotContainsString(
+                'Tds\Ext\Tools\ToolGuideRepository',
+                $e->getMessage(),
+                'the repository must resolve under its real namespace (…\Tools\Domain\…)',
+            );
+        }
+    }
+
+    public function testSaveGuideAsksTheSiteToRebuildThatPage(): void
+    {
+        // `fireCache()` looked SiteCache up under the module's own namespace,
+        // where `$c->has()` is always false — so an editor's save answered
+        // {"ok":true} and the public page kept serving the old render forever.
+        // A mocked PDO, not pdoOrSkip(): this asserts a wiring fact, not a
+        // storage fact, and a test that skips wherever no MariaDB is running
+        // would have gated exactly nothing — which is how the bug survived.
+        $cache = new RecordingSiteCache();
+        // `prepare()` is typed `PDOStatement|false`, and an unconfigured mock
+        // picks false — which reads as a DB error rather than a stored guide.
+        $pdo = $this->createMock(PDO::class);
+        $pdo->method('prepare')->willReturn($this->createMock(\PDOStatement::class));
+        $app = $this->app(new FakeUser(auth: true, admin: true), pdo: $pdo, siteCache: $cache);
+
+        $res = $app->handle($this->request('PUT', '/admin/tools/guides/qr-code/de', [
+            'intro' => ['Ein Satz.'],
+        ]));
+
+        self::assertSame(200, $res->getStatusCode());
+        self::assertCount(1, $cache->calls, 'saving a guide must ask the site to rebuild that page');
+        self::assertSame('tool', $cache->calls[0]['events'][0]->type);
+        self::assertSame('qr-code', $cache->calls[0]['events'][0]->id);
+        self::assertSame('de', $cache->calls[0]['events'][0]->lang);
     }
 }

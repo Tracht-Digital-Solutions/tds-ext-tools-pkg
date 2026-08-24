@@ -17,15 +17,20 @@ return [
         'pattern' => '/tools/catalog',
         'tag' => 'Öffentlich',
         'summary' => 'Der zusammengeführte Tool-Katalog samt AdSense-Konfiguration',
-        'description' => 'Unauthentifiziert: `tools.tracht-digital.de` backt diese Antwort '
-            . 'beim Build in die statische Seite. Geliefert wird die Vereinigung aus '
-            . 'dem, was die Tool-Pakete gemeldet haben, und den Übersteuerungen aus der '
-            . 'Verwaltung (aktiv, Login nötig, Premium, Preis).',
+        'description' => 'Unauthentifiziert: `tools.tracht-digital.de` liest diese Antwort '
+            . 'beim Rendern und legt sie in seinem Seiten-Cache ab. Geliefert werden NUR '
+            . 'die Übersteuerungen aus der Verwaltung (aktiv, Login nötig, Premium, Preis) '
+            . '— die Tool-Liste selbst gehört den Paketen, und keine Antwort von hier '
+            . 'kann die Seite leeren.',
         'auth' => 'public',
         'responses' => [
             [
                 'status' => 200,
-                'description' => '`{tools: [{id, slug, name, enabled, requires_login, is_premium, price_cents}], ads: {enabled, client, slots}}`',
+                // Weder `slug` noch `name` stehen drin, und der ads-Block heißt anders,
+                // als hier jahrelang dokumentiert war: `publicCatalog()` liefert reine
+                // Flags. Der Paritätstest vergleicht nur Methode + Pfad, sieht eine
+                // falsche Antwortform also nicht.
+                'description' => '`{tools: [{id, enabled, requires_login, is_premium, price_cents}], ads: {enabled, publisherId, slotCatalog, slotTool}}`',
             ],
         ],
     ],

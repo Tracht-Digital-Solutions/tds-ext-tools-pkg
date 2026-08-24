@@ -1,6 +1,6 @@
 {
   "name": "@tracht-digital-solutions/tds-ext-tools",
-  "version": "26.6.0",
+  "version": "26.7.0",
   "description": "Public tools platform admin for the TDS panel: tool catalog management (enabled/login/premium/price), AdSense + rebuild config. Ships the frontend manifest, PHP Module, and the dual CI/publish pipeline.",
   "license": "UNLICENSED",
   "private": false,

@@ -71,6 +71,12 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             new SettingDef('rebuild_repo', 'Rebuild-Repo (owner/name)', false, 'tools', 'Tracht-Digital-Solutions/tds-tools-frontend'),
             new SettingDef('rebuild_workflow', 'Rebuild-Workflow', false, 'tools', 'dev.yml'),
             new SettingDef('rebuild_token', 'Rebuild-Token (GitHub PAT)', true, 'tools'),
+            // The page cache of the public site. Separate from the rebuild
+            // pair above and NOT interchangeable with it: a rebuild ships code
+            // through CI, this re-renders a page from content that is already
+            // saved. Both exist because both jobs exist.
+            new SettingDef('cache_url', 'Seiten-Cache: Basis-URL der Tools-Site', false, 'tools', 'https://tools.tracht-digital.de'),
+            new SettingDef('cache_token', 'Seiten-Cache: Token', true, 'tools'),
             new SettingDef('stripe_secret_key', 'Stripe Secret Key (Premium)', true, 'tools'),
             new SettingDef('stripe_webhook_secret', 'Stripe Webhook Secret', true, 'tools'),
             new SettingDef('currency', 'Währung (Premium)', false, 'tools', 'EUR'),
@@ -95,6 +101,7 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
         // module owns these classes; nothing else defines them.
         if ($c !== null) {
             $c->set(ToolConfigRepository::class, static fn ($c) => new ToolConfigRepository($c->get(PDO::class)));
+            $c->set(ToolGuideRepository::class, static fn ($c) => new ToolGuideRepository($c->get(PDO::class)));
             $c->set(EntitlementRepository::class, static fn ($c) => new EntitlementRepository($c->get(PDO::class)));
             $c->set(StripeClient::class, static function ($c): StripeClient {
                 $key = self::store($c)?->getSecret(self::NS, 'stripe_secret_key');
@@ -112,6 +119,27 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
                 'tools' => $repo->publicCatalog(),
                 'ads' => self::adsConfig($c),
             ]);
+        });
+
+        // --- Public: the panel-editable copy of each tool page ----------------
+        //
+        // Site-key protected like /tools/catalog (see siteKeyRoutes). It has to
+        // be listed there: a new public read path that nobody adds to the list
+        // is the one hole in an otherwise gated surface.
+        $app->get('/tools/guides', function (Request $req, Response $res) use ($c): Response {
+            $lang = strtolower(trim((string) ($req->getQueryParams()['lang'] ?? 'de')));
+            if (!in_array($lang, ['de', 'en'], true)) {
+                $lang = 'de';
+            }
+            try {
+                $guides = $c->get(ToolGuideRepository::class)->allForLang($lang);
+            } catch (Throwable) {
+                // Fail soft, exactly like the other public content reads: the
+                // site falls back to the guides committed in its own repo, so
+                // a database hiccup makes a tool page stale, never blank.
+                $guides = [];
+            }
+            return self::json($res, ['guides' => (object) $guides]);
         });
 
         // --- Registry sync (token-gated; the site build upserts its packs) ----
@@ -182,6 +210,54 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
                 return $deny;
             }
             self::fireRebuild($c, 'manual-rebuild');
+            return self::json($res, ['ok' => true]);
+        });
+
+        // --- Admin: the tool pages' copy --------------------------------------
+        $app->get('/admin/tools/guides', function (Request $req, Response $res) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            return self::json($res, ['guides' => $c->get(ToolGuideRepository::class)->all()]);
+        });
+
+        $app->put('/admin/tools/guides/{id}/{lang}', function (Request $req, Response $res, array $args) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $lang = strtolower((string) $args['lang']);
+            if (!in_array($lang, ['de', 'en'], true)) {
+                return self::json($res, ['error' => 'Unsupported language'], 422);
+            }
+            $toolId = (string) $args['id'];
+            $c->get(ToolGuideRepository::class)->save($toolId, $lang, (array) $req->getParsedBody());
+            self::fireCache($c, $toolId, $lang);
+            return self::json($res, ['ok' => true]);
+        });
+
+        $app->delete('/admin/tools/guides/{id}/{lang}', function (Request $req, Response $res, array $args) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $lang = strtolower((string) $args['lang']);
+            $toolId = (string) $args['id'];
+            $c->get(ToolGuideRepository::class)->delete($toolId, $lang);
+            self::fireCache($c, $toolId, $lang);
+            return self::json($res, ['ok' => true]);
+        });
+
+        // --- Admin: rebuild the public site's page cache ----------------------
+        //
+        // Distinct from /admin/tools/rebuild above, which dispatches a CI build.
+        // This one re-renders pages from content that is already saved, in
+        // seconds, and is what an editor reaches for.
+        $app->post('/admin/tools/cache/rebuild', function (Request $req, Response $res) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $body = (array) $req->getParsedBody();
+            $toolId = isset($body['tool_id']) ? (string) $body['tool_id'] : null;
+            self::fireCache($c, $toolId, null);
             return self::json($res, ['ok' => true]);
         });
 
@@ -288,6 +364,34 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
         ];
     }
 
+    /**
+     * Ask the public site to re-render the pages a tool's copy affects.
+     *
+     * Never throws and never fails the save: a site that is down, moved or not
+     * configured yet must not turn "save this guide" into an error. The guide
+     * is stored either way and the operator has a rebuild button to catch up.
+     *
+     * `has()` is legitimate here because SiteCache is an INTERFACE — the base
+     * either bound an implementation or it did not. On a concrete class the
+     * same check would always answer true (PHP-DI autowires), which is the
+     * trap that left six modules binding nothing at all.
+     */
+    private static function fireCache(ContainerInterface $c, ?string $toolId, ?string $lang): void
+    {
+        if (!$c->has(SiteCache::class)) {
+            return;
+        }
+        $url = self::setting($c, 'cache_url', 'TOOLS_CACHE_URL', '');
+        $token = self::store($c)?->getSecret(self::NS, 'cache_token');
+        if ($token === null || $token === '') {
+            $token = self::env('TOOLS_CACHE_TOKEN', '');
+        }
+
+        $c->get(SiteCache::class)->rebuild($url, $token, [
+            new CacheEvent('tool', $toolId, $lang),
+        ]);
+    }
+
     private static function fireRebuild(ContainerInterface $c, string $reason): void
     {
         $token = self::store($c)?->getSecret(self::NS, 'rebuild_token');
@@ -385,6 +489,6 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
      */
     public function siteKeyRoutes(): array
     {
-        return ['/tools/catalog'];
+        return ['/tools/catalog', '/tools/guides'];
     }
 }

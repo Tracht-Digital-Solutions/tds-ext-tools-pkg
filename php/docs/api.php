@@ -102,6 +102,98 @@ return [
     ],
     [
         'method' => 'GET',
+        'pattern' => '/tools/guides',
+        'tag' => 'Öffentlich',
+        'summary' => 'Die im Panel gepflegten Texte der Tool-Seiten',
+        'description' => 'Unauthentifiziert (site-key-geschützt wie `/tools/catalog`). '
+            . 'Liefert je Tool-Id die übersteuerten Texte einer Sprache: Name, '
+            . 'Beschreibung, SEO-Felder und den Ratgeber (Einleitung, Anwendungsfälle, '
+            . 'Schritte, FAQ, Datenschutzhinweis, verwandte Tools). **Alles ist eine '
+            . 'Übersteuerung**: fehlt ein Feld, rendert die Site den im Repo '
+            . 'mitgelieferten Text, sodass eine leere oder nicht erreichbare Datenbank '
+            . 'eine Tool-Seite niemals leeren kann.',
+        'auth' => 'public',
+        'responses' => [
+            ['status' => 200, 'description' => '`{guides: {"<tool-id>": {…}}}` — leer, wenn nichts gepflegt ist.'],
+        ],
+    ],
+    [
+        'method' => 'GET',
+        'pattern' => '/admin/tools/guides',
+        'tag' => 'Verwaltung',
+        'summary' => 'Alle gepflegten Tool-Texte, für die Bearbeitungsoberfläche',
+        'permission' => 'tools:manage',
+        'responses' => [
+            ['status' => 200, 'description' => '`{guides: [{tool_id, lang, …}]}`'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Kein `tools:manage`.'],
+        ],
+    ],
+    [
+        'method' => 'PUT',
+        'pattern' => '/admin/tools/guides/{id}/{lang}',
+        'tag' => 'Verwaltung',
+        'summary' => 'Text und Ratgeber eines Tools in einer Sprache speichern',
+        'description' => 'Ein weggelassenes Feld wird als NULL gespeichert, heißt also '
+            . '„wieder den mitgelieferten Text verwenden" — sonst ließe sich eine '
+            . 'Übersteuerung ohne Datenbankzugriff nicht mehr zurücknehmen. Nach dem '
+            . 'Speichern wird der Seiten-Cache der betroffenen Tool-Seite neu gebaut.',
+        'permission' => 'tools:manage',
+        'params' => [
+            ['in' => 'path', 'name' => 'id', 'type' => 'string', 'required' => true, 'description' => 'Tool-Id (Slug, keine Zahl).'],
+            ['in' => 'path', 'name' => 'lang', 'type' => 'string', 'required' => true, 'description' => '`de` oder `en`.'],
+            ['in' => 'body', 'name' => 'name', 'type' => 'string', 'description' => 'Anzeigename; leer = der Name aus dem Paket-Manifest.'],
+            ['in' => 'body', 'name' => 'description', 'type' => 'string', 'description' => 'Kurzbeschreibung für Katalog und Kopfbereich.'],
+            ['in' => 'body', 'name' => 'seo_title', 'type' => 'string', 'description' => 'Seitentitel (Budget: 60 Zeichen).'],
+            ['in' => 'body', 'name' => 'seo_description', 'type' => 'string', 'description' => 'Meta-Description (Budget: 80–160 Zeichen).'],
+            ['in' => 'body', 'name' => 'intro', 'type' => 'array', 'description' => 'Absätze der Einleitung.'],
+            ['in' => 'body', 'name' => 'use_cases', 'type' => 'array', 'description' => 'Anwendungsfälle.'],
+            ['in' => 'body', 'name' => 'steps', 'type' => 'array', 'description' => 'Schritte — speisen auch das HowTo-JSON-LD.'],
+            ['in' => 'body', 'name' => 'faq', 'type' => 'array', 'description' => 'Fragen und Antworten — speisen auch das FAQPage-JSON-LD.'],
+            ['in' => 'body', 'name' => 'related', 'type' => 'array', 'description' => 'Slugs verwandter Tools.'],
+            ['in' => 'body', 'name' => 'privacy', 'type' => 'string', 'description' => 'Datenschutzhinweis unter dem Werkzeug.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true}`'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Kein `tools:manage`.'],
+            ['status' => 422, 'description' => 'Sprache weder `de` noch `en`.'],
+        ],
+    ],
+    [
+        'method' => 'DELETE',
+        'pattern' => '/admin/tools/guides/{id}/{lang}',
+        'tag' => 'Verwaltung',
+        'summary' => 'Übersteuerung zurücknehmen (der mitgelieferte Text greift wieder)',
+        'permission' => 'tools:manage',
+        'params' => [
+            ['in' => 'path', 'name' => 'id', 'type' => 'string', 'required' => true, 'description' => 'Tool-Id (Slug, keine Zahl).'],
+            ['in' => 'path', 'name' => 'lang', 'type' => 'string', 'required' => true, 'description' => '`de` oder `en`.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true}`'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Kein `tools:manage`.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/admin/tools/cache/rebuild',
+        'tag' => 'Verwaltung',
+        'summary' => 'Seiten-Cache der Tools-Site neu bauen',
+        'description' => 'Nicht zu verwechseln mit `/admin/tools/rebuild`: das stößt einen '
+            . 'CI-Build an und liefert Code aus, das hier rendert Seiten aus bereits '
+            . 'gespeichertem Inhalt neu — in Sekunden statt Minuten. Optional `tool_id` '
+            . 'im Rumpf, sonst wird die ganze Site erfasst.',
+        'permission' => 'tools:manage',
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true}` — auch dann, wenn die Site nicht erreichbar war (der Aufruf scheitert nie am Speichern).'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Kein `tools:manage`.'],
+        ],
+    ],
+    [
+        'method' => 'GET',
         'pattern' => '/tools/summary',
         'tag' => 'Verwaltung',
         'summary' => 'Kennzahlen des Katalogs für das Dashboard-Widget',

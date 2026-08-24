@@ -27,6 +27,11 @@ const pkg = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as {
   dependencies?: Record<string, string>;
 };
 
+/** The Composer half of the same release — bumped in lockstep. */
+const composer = JSON.parse(readFileSync(new URL("composer.json", root), "utf8")) as {
+  version: string;
+};
+
 /** Every specifier the manifest asks the product build to resolve. */
 const specifiers = [
   ...(manifest.routes ?? []).map((r) => r.entrypoint),
@@ -35,16 +40,7 @@ const specifiers = [
 ];
 
 /** The minor line the admin product caret-pins this package at. */
-/**
- * The major line `tds-admin-frontend` caret-pins.
- *
- * CalVer since 26.7.0. This used to be a MINOR line (`0.1`), because under 0.x a
- * caret is minor-locked — `^0.1.1` means `>=0.1.1 <0.2.0`, so a minor bump here
- * silently stopped the product picking the package up. At 26.x a caret is the
- * ordinary kind, `^26.7.0` = `>=26.7.0 <27.0.0`, so the line that must not be
- * crossed without repinning the product is the MAJOR one.
- */
-const PINNED_MAJOR_LINE = "26";
+
 
 /** `@scope/name/pages/Index.astro` → `pages/Index.astro` */
 const subpath = (spec: string) => spec.slice(pkg.name.length + 1);
@@ -110,12 +106,25 @@ describe("dependency hygiene", () => {
     expect(range, "a file:/link: range never resolves for a consumer").not.toMatch(/^(file:|link:)/);
   });
 
-  it("stays inside the major line the products caret-pin", () => {
-    // tds-admin-frontend depends on this package with a caret. Leaving the line
-    // its range covers does not fail anything here — the product simply keeps
-    // installing the old version, silently, until someone widens the range by
-    // hand. That is the whole failure mode this asserts against.
-    expect(pkg.version.startsWith(`${PINNED_MAJOR_LINE}.`)).toBe(true);
+  it("stays on the 0.x line the product caret-pins", () => {
+    // `tds-admin-frontend` pins this package with a 0.x caret, which is
+    // MINOR-locked: `^0.3.0` means `>=0.3.0 <0.4.0`. Leaving the pinned line
+    // fails nothing — the product just keeps installing the old version,
+    // silently — so a minor bump here means repinning the consumer in the same
+    // change. The exact line cannot be asserted from inside this repo (the
+    // consumer lives in another one), and the committed version is always one
+    // bump BELOW what gets published, because release.yml owns the bump.
+    // Reaching 1.0.0 would strand the product outright, which is checkable.
+    expect(pkg.version.startsWith("0.")).toBe(true);
+  });
+
+  it("carries the same version in package.json, composer.json and the manifest", () => {
+    // The manifest version is what the panel's Module page shows. Nothing bumped
+    // it for 22 releases, so it reported 0.1.0 for a deployed 0.1.22.
+    // `scripts/sync-version.mjs` writes all three now; this is what keeps that
+    // wired up.
+    expect(composer.version).toBe(pkg.version);
+    expect(manifest.version).toBe(pkg.version);
   });
 
   it("exposes the scripts CI runs", () => {

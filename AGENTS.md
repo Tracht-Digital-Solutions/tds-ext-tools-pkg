@@ -57,7 +57,7 @@ config, the panel-editable tool guides, registry sync and both rebuild triggers
 ## Gotchas
 
 - **A missing `use` statement is silent, and it took the whole guides feature
-  down for the life of the release (fixed 26.7.0).** `ToolsModule.php` is in
+  down for the life of the release (fixed 0.3.0).** `ToolsModule.php` is in
   `namespace Tds\Ext\Tools`, and an unqualified class name resolves against
   *that* namespace. Four were missing, with three different symptoms:
   `ToolGuideRepository` (really `…\Tools\Domain\…`) made the DI factory throw
@@ -164,7 +164,7 @@ npm run test:run    # vitest, 134 tests (jsdom per-file via a @vitest-environmen
 composer test       # phpunit, 22 tests (3 skip without TDS_TEST_DB_DSN)
 ```
 
-**Both run in CI as of 26.7.0.** `composer test` always did; `npm run test:run`
+**Both run in CI as of 0.3.0.** `composer test` always did; `npm run test:run`
 did not, so ~1 200 lines of island tests gated nothing.
 
 - `islands/ToolsManage.test.tsx` — the catalog table. Every row decides what the

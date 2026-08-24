@@ -10,11 +10,10 @@ import { defineExtension } from "@tracht-digital-solutions/tds-frontend-contract
 export default defineExtension({
   id: "tools",
   name: "Tools",
-  // Kept in step with package.json/composer.json BY HAND: the release workflow
-  // bumps only those two, so this string drifted from 0.1.0 to a package on
-  // 0.1.22 without anything noticing. It is what the panel's Module page
-  // reports, so a stale value there misreports what is deployed.
-  version: "26.7.0",
+  // Bumped by `scripts/sync-version.mjs` from package.json during a release —
+  // do not hand-edit. Nothing used to bump it, so it drifted to 0.1.0 against a
+  // package on 0.1.22, and this is the string the panel's Module page reports.
+  version: "0.2.0",
   permissions: [{ id: "tools:manage", label: "Tools verwalten", group: "tools" }],
   nav: [
     {

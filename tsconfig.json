@@ -10,6 +10,13 @@
     "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+
+    // Not ours: tsup's d.ts step sets `baseUrl: compilerOptions.baseUrl || "."`
+    // unconditionally (tsup/dist/rollup.js), and TypeScript 6 errors on that
+    // deprecated option — the DTS build fails while tsc --noEmit passes. Drop
+    // it when tsup stops injecting baseUrl. The same code path is what blocks
+    // TypeScript 7 here, where it throws outright.
+    "ignoreDeprecations": "6.0",
     "declaration": true,
     "isolatedModules": true,
 

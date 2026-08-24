@@ -44,7 +44,7 @@ against the mounted routes; this table is not, so it listed 6 of 14 for months.
 ## Settings (core SettingsStore, ns=`tools`)
 
 All 15, and **every one has a field in the settings panel** — seven of them did
-not until 26.7.0, which made the page-cache rebuild and the whole premium layer
+not until 0.3.0, which made the page-cache rebuild and the whole premium layer
 configurable only by editing `.env` on the host. On this Plesk host that is the
 same as not configurable at all.
 

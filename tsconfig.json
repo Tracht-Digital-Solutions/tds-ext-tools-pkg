@@ -6,6 +6,15 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
 
+    // Explicit, because TypeScript's automatic "load every @types/* in
+    // node_modules" is sensitive to the shape of the installed tree. Under
+    // TypeScript 6 a FRESH install stopped resolving `node:fs` / `node:url`
+    // (TS2591) while an incrementally-updated local tree kept working — so the
+    // suite passed here and failed in CI on the same commit. Naming the global
+    // type packages makes it deterministic. React/JSX types are unaffected:
+    // they come through the react package, not a global @types entry.
+    "types": ["node"],
+
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,

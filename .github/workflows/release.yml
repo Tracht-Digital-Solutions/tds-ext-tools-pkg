@@ -2,7 +2,8 @@ name: Release (manual → GitHub Packages @latest)
 
 # Manual button for a chosen bump (patch/minor/major). Pushes to main already
 # auto-release a PATCH via dev.yml; use this for a minor/major bump. Also
-# dispatches a rebuild of the dependent site. Pipeline body in _build.yml.
+# dispatches a rebuild of the dependent product — its dev.yml, i.e. a build and
+# not a deploy (see _build.yml's rebuild_workflow). Pipeline body in _build.yml.
 
 on:
   workflow_dispatch:

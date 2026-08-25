@@ -24,10 +24,21 @@ on:
         type: string
         default: patch
       rebuild_site:
-        description: Repo whose release.yml to dispatch after a @latest publish (site rebuild). Empty = none.
+        description: Repo whose workflow to dispatch after a @latest publish (site rebuild). Empty = none.
         required: false
         type: string
         default: ''
+      rebuild_workflow:
+        description: >-
+          Which workflow to dispatch in rebuild_site. Defaults to dev.yml, which
+          builds the staging artifact WITHOUT deploying. Do not point this at a
+          product's release.yml: since 2026-08-25 the frontend products are Node
+          applications, so their release branch is a running app rather than a
+          folder of files, and a push to it deploys. A commit in THIS repo must
+          not be able to deploy someone else's panel to production.
+        required: false
+        type: string
+        default: dev.yml
 
 jobs:
   build:
@@ -125,12 +136,16 @@ jobs:
           git push --follow-tags origin HEAD:main
 
       - name: Dispatch site rebuild
-        # After a real release, kick the dependent product's deploy so it
-        # rebuilds against the new extension version.
+        # After a real release, kick the dependent product so it rebuilds
+        # against the new extension version. This targets rebuild_workflow
+        # (dev.yml by default) — a BUILD, not a deploy. It used to name
+        # release.yml, which meant every push to this repo's main deployed
+        # tds-admin-frontend to production; harmless while that was a folder of
+        # static files, and a panel-wide outage once it became a Node app.
         if: ${{ inputs.publish_tag == 'latest' && inputs.rebuild_site != '' }}
         env:
           GH_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
-        run: gh workflow run release.yml -R Tracht-Digital-Solutions/${{ inputs.rebuild_site }}
+        run: gh workflow run "${{ inputs.rebuild_workflow }}" -R Tracht-Digital-Solutions/${{ inputs.rebuild_site }}
 
       - name: Prune old prerelease package versions (keep newest 5)
         continue-on-error: true  # best-effort housekeeping; needs delete:packages

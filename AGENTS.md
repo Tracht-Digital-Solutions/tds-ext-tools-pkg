@@ -82,6 +82,18 @@ config, the panel-editable tool guides, registry sync and both rebuild triggers
   throws, so the stale default made every catalog-change dispatch 404 in
   silence. If that workflow is renamed again, this default and
   `islands/ToolsSettings.tsx` both have to follow.
+- **There is a SECOND rebuild trigger, in CI, and it points the other way.**
+  Don't confuse them: the bullet above is `RebuildTrigger`, PHP, at request
+  time, aimed at `tds-tools-frontend`. This one is `_build.yml`'s *Dispatch site
+  rebuild* step, aimed at **`tds-admin-frontend`** after a `@latest` publish —
+  and since `dev.yml` auto-releases a patch on every push to `main`, it fires on
+  every commit here. It named `release.yml` until 2026-08-25, which meant a
+  commit in this repo **deployed the admin panel to production**. That was
+  survivable while the panel was a folder of static files; the products are Node
+  applications now, so a push to their `release` branch takes the panel down on
+  every path until Plesk restarts it. The step now takes a `rebuild_workflow`
+  input defaulting to **`dev.yml`** — a build, never a deploy. Deploying a
+  product stays a decision somebody makes in that product's own repo.
 - **Every declared setting needs a field in `ToolsSettings.tsx`.** The manifest
   registers a *custom* settings island, so the generic settings UI never renders
   these keys — a `SettingDef` with no matching input is invisible, and the

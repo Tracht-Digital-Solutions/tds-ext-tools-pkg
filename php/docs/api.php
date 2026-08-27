@@ -17,12 +17,12 @@ return [
         'pattern' => '/tools/catalog',
         'tag' => 'Öffentlich',
         'summary' => 'Der zusammengeführte Tool-Katalog samt AdSense-Konfiguration',
-        'description' => 'Unauthentifiziert: `tools.tracht-digital.de` liest diese Antwort '
-            . 'beim Rendern und legt sie in seinem Seiten-Cache ab. Geliefert werden NUR '
+        'description' => 'Die gekoppelte Tools-Site liest diese Antwort mit ihrem auf Tools '
+            . 'begrenzten Site-Key und legt sie in ihrem Seiten-Cache ab. Geliefert werden NUR '
             . 'die Übersteuerungen aus der Verwaltung (aktiv, Login nötig, Premium, Preis) '
             . '— die Tool-Liste selbst gehört den Paketen, und keine Antwort von hier '
             . 'kann die Seite leeren.',
-        'auth' => 'public',
+        'auth' => 'token',
         'responses' => [
             [
                 'status' => 200,
@@ -38,21 +38,22 @@ return [
         'method' => 'POST',
         'pattern' => '/tools/registry',
         'tag' => 'Öffentlich',
-        'summary' => 'Der Site-Build meldet seine komponierten Tool-Pakete',
+        'summary' => 'Die gekoppelte Site synchronisiert ihren gebauten Tool-Katalog',
         'description' => 'Die Richtung, in der die Tool-Liste fließt: die Pakete deklarieren '
-            . 'die Tools, der Build von `tds-tools-frontend` meldet sie hierher, und die '
-            . 'Verwaltung kann sie danach übersteuern. Kein Nutzer-Login, sondern ein '
-            . 'gemeinsames Geheimnis — der Build hat keine Sitzung. Der Vergleich läuft '
-            . 'über `hash_equals`, also zeitkonstant.',
+            . 'die Tools, der Server von `tds-tools-frontend` meldet den gebauten Katalog '
+            . 'nach dem Pairing und bei geändertem Katalog-Hash. Die Verwaltung kann die '
+            . 'Einträge danach übersteuern. Zugelassen ist nur der an `tools/tools` gebundene '
+            . 'Site-Key mit Registry-Scope. Das frühere Registry-Token bleibt ausschließlich '
+            . 'für diese Übergangsrelease als serverseitiger Fallback erhalten.',
         'auth' => 'token',
         'params' => [
-            ['in' => 'body', 'name' => 'token', 'type' => 'string', 'description' => 'Das Sync-Token. Alternativ als `Authorization: Bearer`.'],
+            ['in' => 'header', 'name' => 'X-TDS-Site-Key', 'type' => 'string', 'required' => true, 'description' => 'Der beim Pairing ausgestellte, ressourcengebundene Site-Key.'],
             ['in' => 'body', 'name' => 'tools', 'type' => 'array', 'required' => true, 'description' => 'Die komponierten Tools aus den Paketen.'],
         ],
         'responses' => [
             ['status' => 200, 'description' => '`{ok: true, synced: <Anzahl>}`'],
-            ['status' => 401, 'description' => 'Token fehlt oder stimmt nicht.'],
-            ['status' => 503, 'description' => 'Kein Sync-Token konfiguriert — die Route ist damit abgeschaltet.'],
+            ['status' => 401, 'description' => 'Site-Key ist ungültig, falsch gebunden oder ohne Registry-Scope.'],
+            ['status' => 503, 'description' => 'Weder gekoppelte Site noch Übergangs-Fallback ist konfiguriert.'],
         ],
     ],
     [
@@ -68,14 +69,56 @@ return [
         ],
     ],
     [
+        'method' => 'GET',
+        'pattern' => '/admin/tools/connection',
+        'tag' => 'Verbindung',
+        'summary' => 'Status der Tools-Site-Verbindung',
+        'permission' => 'tools:manage',
+        'responses' => [
+            ['status' => 200, 'description' => 'Öffentliche Verbindungsdaten ohne Site-Key oder Cache-Token.'],
+            ['status' => 404, 'description' => 'Die Tools-Site ist noch nicht gekoppelt.'],
+            ['status' => 503, 'description' => 'Der gemeinsame Connection-Store ist nicht verfügbar.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/admin/tools/connection/pairing',
+        'tag' => 'Verbindung',
+        'summary' => 'Tools-Site sicher mit der API verbinden oder neu verbinden',
+        'description' => 'Erzeugt eine kurzlebige, einmal verwendbare Freigabe für genau '
+            . '`tools/tools` und liefert sie serverseitig an die HTTPS-Origin. Scheitert '
+            . 'die direkte Zustellung, enthält die Antwort einen Einrichtungslink, dessen '
+            . 'Geheimnis ausschließlich im URL-Fragment steht.',
+        'permission' => 'tools:manage',
+        'params' => [
+            ['in' => 'body', 'name' => 'origin', 'type' => 'string', 'required' => true, 'description' => 'Reine HTTPS-Origin der Tools-Site, ohne Pfad, Query oder Fragment.'],
+        ],
+        'responses' => [
+            ['status' => 201, 'description' => 'Zustellstatus, geheime-freie Verbindung und gegebenenfalls `fallback_url`.'],
+            ['status' => 422, 'description' => 'Origin ungültig oder unsicher.'],
+            ['status' => 429, 'description' => 'Pairing-Rate-Limit erreicht.'],
+            ['status' => 503, 'description' => 'Connection-Store oder Ziel-Site nicht verfügbar.'],
+        ],
+    ],
+    [
+        'method' => 'DELETE',
+        'pattern' => '/admin/tools/connection',
+        'tag' => 'Verbindung',
+        'summary' => 'Tools-Site-Verbindung trennen',
+        'permission' => 'tools:manage',
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true, deleted: bool}`; zugehörige Laufzeitverbindung wird entfernt.'],
+            ['status' => 503, 'description' => 'Der gemeinsame Connection-Store ist nicht verfügbar.'],
+        ],
+    ],
+    [
         'method' => 'PUT',
         'pattern' => '/admin/tools/{id}',
         'tag' => 'Verwaltung',
         'summary' => 'Übersteuerung eines Tools setzen',
-        'description' => '**Löst einen Rebuild der Tools-Seite aus.** Der Katalog ist in die '
-            . 'statische Seite gebacken, eine Änderung wird also erst mit dem nächsten '
-            . 'Build sichtbar — deshalb feuert die Route ihn selbst. `{id}` hat '
-            . 'bewusst kein Zahlenmuster: Tool-Ids sind Slugs.',
+        'description' => 'Speichert die Änderung unabhängig vom Cache-Ergebnis und sendet '
+            . 'anschließend ein gezieltes Cache-Ereignis an die gekoppelte Haupt-Site. '
+            . '`{id}` hat bewusst kein Zahlenmuster: Tool-Ids sind Slugs.',
         'permission' => 'tools:manage',
         'params' => [
             ['in' => 'path', 'name' => 'id', 'type' => 'string', 'required' => true, 'description' => 'Tool-Id (Slug, keine Zahl).'],
@@ -85,24 +128,10 @@ return [
             ['in' => 'body', 'name' => 'price_cents', 'type' => 'int', 'description' => 'Einmalpreis in Cent.'],
         ],
         'responses' => [
-            ['status' => 200, 'description' => '`{ok: true}` — Rebuild wurde angestoßen.'],
+            ['status' => 200, 'description' => '`{ok: true, cache_status, cached, rebuilt, skipped, failed, unknownEvents}`.'],
             ['status' => 401, 'description' => 'Keine Sitzung.'],
             ['status' => 403, 'description' => 'Kein `tools:manage`.'],
             ['status' => 404, 'description' => 'Unbekannte Tool-Id, oder nichts zu ändern.'],
-        ],
-    ],
-    [
-        'method' => 'POST',
-        'pattern' => '/admin/tools/rebuild',
-        'tag' => 'Verwaltung',
-        'summary' => 'Rebuild der Tools-Seite von Hand auslösen',
-        'description' => 'Für den Fall, dass der automatische Rebuild aus einer Änderung '
-            . 'heraus nicht durchgelaufen ist.',
-        'permission' => 'tools:manage',
-        'responses' => [
-            ['status' => 200, 'description' => '`{ok: true}`'],
-            ['status' => 401, 'description' => 'Keine Sitzung.'],
-            ['status' => 403, 'description' => 'Kein `tools:manage`.'],
         ],
     ],
     [
@@ -110,14 +139,14 @@ return [
         'pattern' => '/tools/guides',
         'tag' => 'Öffentlich',
         'summary' => 'Die im Panel gepflegten Texte der Tool-Seiten',
-        'description' => 'Unauthentifiziert (site-key-geschützt wie `/tools/catalog`). '
+        'description' => 'Mit dem ressourcengebundenen Site-Key geschützt wie `/tools/catalog`. '
             . 'Liefert je Tool-Id die übersteuerten Texte einer Sprache: Name, '
             . 'Beschreibung, SEO-Felder und den Ratgeber (Einleitung, Anwendungsfälle, '
             . 'Schritte, FAQ, Datenschutzhinweis, verwandte Tools). **Alles ist eine '
             . 'Übersteuerung**: fehlt ein Feld, rendert die Site den im Repo '
             . 'mitgelieferten Text, sodass eine leere oder nicht erreichbare Datenbank '
             . 'eine Tool-Seite niemals leeren kann.',
-        'auth' => 'public',
+        'auth' => 'token',
         'responses' => [
             ['status' => 200, 'description' => '`{guides: {"<tool-id>": {…}}}` — leer, wenn nichts gepflegt ist.'],
         ],
@@ -159,7 +188,7 @@ return [
             ['in' => 'body', 'name' => 'privacy', 'type' => 'string', 'description' => 'Datenschutzhinweis unter dem Werkzeug.'],
         ],
         'responses' => [
-            ['status' => 200, 'description' => '`{ok: true}`'],
+            ['status' => 200, 'description' => '`{ok: true, cache_status, cached, rebuilt, skipped, failed, unknownEvents}`. Der Text bleibt auch bei Cache-Fehler gespeichert.'],
             ['status' => 401, 'description' => 'Keine Sitzung.'],
             ['status' => 403, 'description' => 'Kein `tools:manage`.'],
             ['status' => 422, 'description' => 'Sprache weder `de` noch `en`.'],
@@ -176,7 +205,7 @@ return [
             ['in' => 'path', 'name' => 'lang', 'type' => 'string', 'required' => true, 'description' => '`de` oder `en`.'],
         ],
         'responses' => [
-            ['status' => 200, 'description' => '`{ok: true}`'],
+            ['status' => 200, 'description' => '`{ok: true, cache_status, cached, rebuilt, skipped, failed, unknownEvents}`. Das Entfernen bleibt auch bei Cache-Fehler gespeichert.'],
             ['status' => 401, 'description' => 'Keine Sitzung.'],
             ['status' => 403, 'description' => 'Kein `tools:manage`.'],
         ],
@@ -186,13 +215,19 @@ return [
         'pattern' => '/admin/tools/cache/rebuild',
         'tag' => 'Verwaltung',
         'summary' => 'Seiten-Cache der Tools-Site neu bauen',
-        'description' => 'Nicht zu verwechseln mit `/admin/tools/rebuild`: das stößt einen '
-            . 'CI-Build an und liefert Code aus, das hier rendert Seiten aus bereits '
-            . 'gespeichertem Inhalt neu — in Sekunden statt Minuten. Optional `tool_id` '
-            . 'im Rumpf, sonst wird die ganze Site erfasst.',
+        'description' => 'Rendert Seiten aus bereits gespeichertem Inhalt neu; ein Deploy '
+            . 'oder GitHub-Aufruf findet nicht statt. Optional `tool_id` im Rumpf, sonst '
+            . 'wird der Katalog der gekoppelten Haupt-Site aktualisiert.',
         'permission' => 'tools:manage',
+        'params' => [
+            ['in' => 'body', 'name' => 'tool_id', 'type' => 'string', 'description' => 'Optional: nur die Seite dieses Tools aktualisieren.'],
+            ['in' => 'body', 'name' => 'event', 'type' => 'string', 'description' => '`settings` aktualisiert Katalog-/globale Seiten.'],
+        ],
         'responses' => [
-            ['status' => 200, 'description' => '`{ok: true}` — auch dann, wenn die Site nicht erreichbar war (der Aufruf scheitert nie am Speichern).'],
+            ['status' => 202, 'description' => 'Cache vollständig aktualisiert (`cached: true`).'],
+            ['status' => 422, 'description' => 'Ungültige Legacy-Origin während der Übergangsrelease.'],
+            ['status' => 502, 'description' => 'Remote-, Transport- oder Teilfehler; Details stehen in `failed`/`skipped`.'],
+            ['status' => 503, 'description' => 'Tools-Site oder Cache-Verbindung fehlt.'],
             ['status' => 401, 'description' => 'Keine Sitzung.'],
             ['status' => 403, 'description' => 'Kein `tools:manage`.'],
         ],

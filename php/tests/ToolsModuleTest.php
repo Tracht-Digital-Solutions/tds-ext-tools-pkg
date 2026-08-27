@@ -11,10 +11,16 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
 use Tds\Ext\Tools\ToolsModule;
 use Tds\Frontend\Contract\CacheEvent;
+use Tds\Frontend\Contract\CacheResult;
+use Tds\Frontend\Contract\ConnectedSiteCache;
 use Tds\Frontend\Contract\ModuleRegistry;
 use Tds\Frontend\Contract\SiteCache;
+use Tds\Frontend\Contract\SiteConnection;
+use Tds\Frontend\Contract\SiteConnections;
 use Tds\Frontend\Contract\SiteKeyIdentity;
 use Tds\Frontend\Contract\SiteKeys;
+use Tds\Frontend\Contract\SitePairing;
+use Tds\Frontend\Contract\SitePairingDelivery;
 use Tds\Frontend\Contract\UserContext;
 
 /** Minimal UserContext double for RBAC tests. */
@@ -40,8 +46,7 @@ final class FakeUser implements UserContext
 /** A SiteKeys double: one valid plaintext, bound to one site. */
 final class FakeSiteKeys implements SiteKeys
 {
-    /** The site the caller demanded — asserted, because trusting the body is the bug. */
-    public ?string $demandedSite = null;
+    public ?string $presentedKey = null;
 
     public function __construct(
         private readonly string $valid,
@@ -51,19 +56,106 @@ final class FakeSiteKeys implements SiteKeys
 
     public function verify(string $key, ?string $site = null, ?string $origin = null): ?SiteKeyIdentity
     {
-        $this->demandedSite = $site;
+        $this->presentedKey = $key;
         if (!hash_equals($this->valid, $key)) {
             return null;
         }
         if ($site !== null && $site !== $this->site) {
             return null;
         }
-        return new SiteKeyIdentity(1, $this->site, $this->site, '');
+        return new SiteKeyIdentity(
+            1,
+            $this->site,
+            $this->site,
+            '',
+            $this->site,
+            $this->site,
+            [],
+            ['/tools/registry'],
+        );
     }
 
     public function enforcement(): string
     {
         return 'off';
+    }
+}
+
+/** In-memory tools connection used to test extension wiring without core DB tables. */
+final class FakeSiteConnections implements SiteConnections
+{
+    /** @var list<array<string,mixed>> */
+    public array $pairings = [];
+    public bool $deleted = false;
+
+    public function __construct(
+        public ?SiteConnection $connection = null,
+        private readonly bool $delivered = true,
+    ) {
+    }
+
+    public function get(string $resourceType, string $resourceId): ?SiteConnection
+    {
+        return $resourceType === 'tools' && $resourceId === 'tools' ? $this->connection : null;
+    }
+
+    public function createPairing(
+        string $resourceType,
+        string $resourceId,
+        string $origin,
+        string $profile,
+        array $bindings = [],
+        array $scopes = [],
+    ): SitePairing {
+        $this->pairings[] = compact('resourceType', 'resourceId', 'origin', 'profile', 'bindings', 'scopes');
+        return new SitePairing(
+            'pairing-id',
+            'pairing-secret',
+            $resourceType,
+            $resourceId,
+            $origin,
+            $profile,
+            $bindings,
+            $scopes,
+            '2026-08-27T12:10:00+00:00',
+        );
+    }
+
+    public function deliverPairing(SitePairing $pairing, string $apiBase): SitePairingDelivery
+    {
+        return new SitePairingDelivery(
+            $this->delivered,
+            $this->delivered ? SiteConnection::CONNECTED : SiteConnection::PENDING,
+            $this->connection,
+            $this->delivered ? null : $pairing->installUrl($apiBase),
+            $pairing->expiresAt,
+        );
+    }
+
+    public function delete(string $resourceType, string $resourceId): bool
+    {
+        $this->deleted = $resourceType === 'tools' && $resourceId === 'tools';
+        if ($this->deleted) {
+            $this->connection = null;
+        }
+        return $this->deleted;
+    }
+}
+
+/** Records the resource-bound cache request and returns a chosen truthful result. */
+final class RecordingConnectedSiteCache implements ConnectedSiteCache
+{
+    /** @var list<array{resourceType:string,resourceId:string,event:CacheEvent}> */
+    public array $calls = [];
+
+    public function __construct(private readonly CacheResult $result)
+    {
+    }
+
+    public function refresh(string $resourceType, string $resourceId, CacheEvent $event): CacheResult
+    {
+        $this->calls[] = compact('resourceType', 'resourceId', 'event');
+        return $this->result;
     }
 }
 
@@ -96,6 +188,8 @@ final class ToolsModuleTest extends TestCase
         ?PDO $pdo = null,
         ?SiteKeys $siteKeys = null,
         ?SiteCache $siteCache = null,
+        ?SiteConnections $connections = null,
+        ?ConnectedSiteCache $connectedSiteCache = null,
     ) {
         $container = new Container();
         $container->set(UserContext::class, $user);
@@ -107,6 +201,12 @@ final class ToolsModuleTest extends TestCase
         }
         if ($siteCache !== null) {
             $container->set(SiteCache::class, $siteCache);
+        }
+        if ($connections !== null) {
+            $container->set(SiteConnections::class, $connections);
+        }
+        if ($connectedSiteCache !== null) {
+            $container->set(ConnectedSiteCache::class, $connectedSiteCache);
         }
         AppFactory::setContainer($container);
         $app = AppFactory::create();
@@ -141,6 +241,132 @@ final class ToolsModuleTest extends TestCase
         self::assertSame(403, $res->getStatusCode());
     }
 
+    public function testConnectionStatusRequiresManagePermission(): void
+    {
+        $connections = new FakeSiteConnections($this->connectedToolsSite());
+        $anonymous = $this->app(new FakeUser(), connections: $connections);
+        self::assertSame(401, $anonymous->handle($this->request('GET', '/admin/tools/connection'))->getStatusCode());
+
+        $readOnly = $this->app(new FakeUser(auth: true, permissions: ['other:read']), connections: $connections);
+        self::assertSame(403, $readOnly->handle($this->request('GET', '/admin/tools/connection'))->getStatusCode());
+    }
+
+    public function testConnectionStatusNeverReturnsSecrets(): void
+    {
+        $connections = new FakeSiteConnections($this->connectedToolsSite());
+        $app = $this->app(new FakeUser(auth: true, admin: true), connections: $connections);
+        $res = $app->handle($this->request('GET', '/admin/tools/connection'));
+
+        self::assertSame(200, $res->getStatusCode());
+        $body = (string) $res->getBody();
+        self::assertStringContainsString('"resource_type":"tools"', $body);
+        self::assertStringNotContainsString('pairing_token', strtolower($body));
+        self::assertStringNotContainsString('site_key_value', strtolower($body));
+        self::assertStringNotContainsString('cache_token', strtolower($body));
+    }
+
+    public function testPairingIsBoundToToolsAndOnlyItsThreePublicRoutes(): void
+    {
+        $connections = new FakeSiteConnections($this->connectedToolsSite());
+        $app = $this->app(new FakeUser(auth: true, admin: true), connections: $connections);
+        $res = $app->handle($this->request(
+            'POST',
+            'https://api.tracht-digital.de/admin/tools/connection/pairing',
+            ['origin' => 'https://tools.tracht-digital.de', 'profile' => 'ignored'],
+        ));
+
+        self::assertSame(201, $res->getStatusCode());
+        self::assertCount(1, $connections->pairings);
+        self::assertSame('tools', $connections->pairings[0]['resourceType']);
+        self::assertSame('tools', $connections->pairings[0]['resourceId']);
+        self::assertSame('tools', $connections->pairings[0]['profile']);
+        self::assertSame(['tools' => 'tools'], $connections->pairings[0]['bindings']);
+        self::assertSame(
+            ['/tools/catalog', '/tools/guides', '/tools/registry'],
+            $connections->pairings[0]['scopes'],
+        );
+        self::assertStringNotContainsString('pairing-secret', (string) $res->getBody());
+    }
+
+    public function testPairingFallbackKeepsSecretInUrlFragment(): void
+    {
+        $connections = new FakeSiteConnections(delivered: false);
+        $app = $this->app(new FakeUser(auth: true, admin: true), connections: $connections);
+        $res = $app->handle($this->request(
+            'POST',
+            'https://api.tracht-digital.de/admin/tools/connection/pairing',
+            ['origin' => 'https://tools.tracht-digital.de'],
+        ));
+        $body = json_decode((string) $res->getBody(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(201, $res->getStatusCode());
+        self::assertFalse($body['delivered']);
+        self::assertStringStartsWith('https://tools.tracht-digital.de/install#', $body['fallback_url']);
+        self::assertStringContainsString('pairing_token=pairing-secret', $body['fallback_url']);
+        self::assertStringNotContainsString('?pairing_token=', $body['fallback_url']);
+    }
+
+    public function testDisconnectTargetsOnlyToolsResource(): void
+    {
+        $connections = new FakeSiteConnections($this->connectedToolsSite());
+        $app = $this->app(new FakeUser(auth: true, admin: true), connections: $connections);
+        $res = $app->handle($this->request('DELETE', '/admin/tools/connection'));
+
+        self::assertSame(200, $res->getStatusCode());
+        self::assertTrue($connections->deleted);
+        self::assertStringContainsString('"deleted":true', (string) $res->getBody());
+    }
+
+    public function testManualCacheReturns503WhenNoConnectionExists(): void
+    {
+        $app = $this->app(new FakeUser(auth: true, admin: true));
+        $res = $app->handle($this->request('POST', '/admin/tools/cache/rebuild', []));
+
+        self::assertSame(503, $res->getStatusCode());
+        self::assertStringContainsString('"cache_status":"not_configured"', (string) $res->getBody());
+        self::assertStringContainsString('"cached":false', (string) $res->getBody());
+    }
+
+    public function testManualCacheReturns202OnlyForCompleteRefresh(): void
+    {
+        $connections = new FakeSiteConnections($this->connectedToolsSite());
+        $cache = new RecordingConnectedSiteCache(new CacheResult(CacheResult::REFRESHED, ['/tools/qr-code/']));
+        $app = $this->app(
+            new FakeUser(auth: true, admin: true),
+            connections: $connections,
+            connectedSiteCache: $cache,
+        );
+        $res = $app->handle($this->request('POST', '/admin/tools/cache/rebuild', ['tool_id' => 'qr-code']));
+
+        self::assertSame(202, $res->getStatusCode());
+        self::assertStringContainsString('"cached":true', (string) $res->getBody());
+        self::assertCount(1, $cache->calls);
+        self::assertSame('tools', $cache->calls[0]['resourceType']);
+        self::assertSame('tools', $cache->calls[0]['resourceId']);
+        self::assertSame('qr-code', $cache->calls[0]['event']->id);
+    }
+
+    public function testManualCacheReturns502ForPartialRefresh(): void
+    {
+        $connections = new FakeSiteConnections($this->connectedToolsSite());
+        $cache = new RecordingConnectedSiteCache(new CacheResult(
+            CacheResult::REFRESHED,
+            ['/tools/qr-code/'],
+            [],
+            [['path' => '/tools/qr-code/en/', 'status' => 500]],
+        ));
+        $app = $this->app(
+            new FakeUser(auth: true, admin: true),
+            connections: $connections,
+            connectedSiteCache: $cache,
+        );
+        $res = $app->handle($this->request('POST', '/admin/tools/cache/rebuild', ['tool_id' => 'qr-code']));
+
+        self::assertSame(502, $res->getStatusCode());
+        self::assertStringContainsString('"cached":false', (string) $res->getBody());
+        self::assertStringContainsString('"failed"', (string) $res->getBody());
+    }
+
     public function testRegistrySyncUnconfiguredReturns503(): void
     {
         // Neither a site key nor a registry_token → the endpoint refuses before
@@ -165,14 +391,14 @@ final class ToolsModuleTest extends TestCase
         $keys = new FakeSiteKeys('tdsk_tools_valid', 'tools');
         $app = $this->app(new FakeUser(), pdo: $this->pdoOrSkip(), siteKeys: $keys);
 
-        $res = $app->handle($this->request('POST', '/tools/registry', [
-            'key' => 'tdsk_tools_valid',
+        $req = $this->request('POST', '/tools/registry', [
             'tools' => [['id' => 'qr-code', 'name' => 'QR', 'category' => 'marketing']],
-        ]));
+        ])->withHeader('X-TDS-Site-Key', 'tdsk_tools_valid');
+        $res = $app->handle($req);
 
         self::assertSame(200, $res->getStatusCode());
         self::assertStringContainsString('"synced"', (string) $res->getBody());
-        self::assertSame('tools', $keys->demandedSite, 'the site must be demanded, not read from the body');
+        self::assertSame('tdsk_tools_valid', $keys->presentedKey);
     }
 
     public function testRegistrySyncRejectsAKeyBelongingToAnotherSite(): void
@@ -185,11 +411,10 @@ final class ToolsModuleTest extends TestCase
             siteKeys: new FakeSiteKeys('tdsk_blog_valid', 'blog'),
         );
 
-        $res = $app->handle($this->request('POST', '/tools/registry', [
-            'key' => 'tdsk_blog_valid',
-            'site' => 'tools',
+        $req = $this->request('POST', '/tools/registry', [
             'tools' => [],
-        ]));
+        ])->withHeader('X-TDS-Site-Key', 'tdsk_blog_valid');
+        $res = $app->handle($req);
 
         // Falls through to the legacy token path, which is unconfigured here.
         self::assertSame(503, $res->getStatusCode());
@@ -228,6 +453,23 @@ final class ToolsModuleTest extends TestCase
         self::assertTrue(\Tds\Ext\Tools\Service\WebhookVerifier::verify($payload, $header, $secret));
         self::assertFalse(\Tds\Ext\Tools\Service\WebhookVerifier::verify($payload . 'x', $header, $secret));
         self::assertFalse(\Tds\Ext\Tools\Service\WebhookVerifier::verify($payload, $header, 'wrong'));
+    }
+
+    private function connectedToolsSite(): SiteConnection
+    {
+        return new SiteConnection(
+            7,
+            'tools',
+            'tools',
+            'https://tools.tracht-digital.de',
+            'tools',
+            ['tools' => 'tools'],
+            ['/tools/catalog', '/tools/guides', '/tools/registry'],
+            SiteConnection::CONNECTED,
+            42,
+            '2026-08-27T12:00:00+00:00',
+            '2026-08-27T12:01:00+00:00',
+        );
     }
 
     // --- DB-backed (skipped without a real MariaDB/MySQL, per the repo convention) ---
@@ -348,29 +590,61 @@ final class ToolsModuleTest extends TestCase
         }
     }
 
-    public function testSaveGuideAsksTheSiteToRebuildThatPage(): void
+    public function testSaveGuideTargetsOnlyItsConnectedToolsSite(): void
     {
-        // `fireCache()` looked SiteCache up under the module's own namespace,
-        // where `$c->has()` is always false — so an editor's save answered
-        // {"ok":true} and the public page kept serving the old render forever.
-        // A mocked PDO, not pdoOrSkip(): this asserts a wiring fact, not a
-        // storage fact, and a test that skips wherever no MariaDB is running
-        // would have gated exactly nothing — which is how the bug survived.
-        $cache = new RecordingSiteCache();
+        $connections = new FakeSiteConnections($this->connectedToolsSite());
+        $cache = new RecordingConnectedSiteCache(new CacheResult(CacheResult::REFRESHED, ['/tools/qr-code/']));
         // `prepare()` is typed `PDOStatement|false`, and an unconfigured mock
         // picks false — which reads as a DB error rather than a stored guide.
         $pdo = $this->createMock(PDO::class);
         $pdo->method('prepare')->willReturn($this->createMock(\PDOStatement::class));
-        $app = $this->app(new FakeUser(auth: true, admin: true), pdo: $pdo, siteCache: $cache);
+        $app = $this->app(
+            new FakeUser(auth: true, admin: true),
+            pdo: $pdo,
+            connections: $connections,
+            connectedSiteCache: $cache,
+        );
 
         $res = $app->handle($this->request('PUT', '/admin/tools/guides/qr-code/de', [
             'intro' => ['Ein Satz.'],
         ]));
 
         self::assertSame(200, $res->getStatusCode());
-        self::assertCount(1, $cache->calls, 'saving a guide must ask the site to rebuild that page');
-        self::assertSame('tool', $cache->calls[0]['events'][0]->type);
-        self::assertSame('qr-code', $cache->calls[0]['events'][0]->id);
-        self::assertSame('de', $cache->calls[0]['events'][0]->lang);
+        self::assertCount(1, $cache->calls, 'saving a guide must refresh that connected page');
+        self::assertSame('tools', $cache->calls[0]['resourceType']);
+        self::assertSame('tools', $cache->calls[0]['resourceId']);
+        self::assertSame('tool', $cache->calls[0]['event']->type);
+        self::assertSame('qr-code', $cache->calls[0]['event']->id);
+        self::assertSame('de', $cache->calls[0]['event']->lang);
+        self::assertStringContainsString('"cache_status":"refreshed"', (string) $res->getBody());
+        self::assertStringContainsString('"cached":true', (string) $res->getBody());
+    }
+
+    public function testSaveGuideSucceedsEvenWhenCacheRefreshFails(): void
+    {
+        $connections = new FakeSiteConnections($this->connectedToolsSite());
+        $cache = new RecordingConnectedSiteCache(new CacheResult(
+            CacheResult::FAILED,
+            [],
+            [],
+            [['reason' => 'timeout']],
+        ));
+        $pdo = $this->createMock(PDO::class);
+        $pdo->method('prepare')->willReturn($this->createMock(\PDOStatement::class));
+        $app = $this->app(
+            new FakeUser(auth: true, admin: true),
+            pdo: $pdo,
+            connections: $connections,
+            connectedSiteCache: $cache,
+        );
+
+        $res = $app->handle($this->request('PUT', '/admin/tools/guides/qr-code/de', [
+            'intro' => ['Der gespeicherte Satz.'],
+        ]));
+
+        self::assertSame(200, $res->getStatusCode(), 'cache failure must not roll back or fail content persistence');
+        self::assertStringContainsString('"ok":true', (string) $res->getBody());
+        self::assertStringContainsString('"cache_status":"failed"', (string) $res->getBody());
+        self::assertStringContainsString('"cached":false', (string) $res->getBody());
     }
 }

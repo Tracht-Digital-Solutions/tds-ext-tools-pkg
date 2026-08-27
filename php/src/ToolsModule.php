@@ -11,17 +11,20 @@ use Slim\App;
 use Tds\Ext\Tools\Domain\EntitlementRepository;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
 use Tds\Ext\Tools\Domain\ToolGuideRepository;
-use Tds\Ext\Tools\Service\RebuildTrigger;
 use Tds\Ext\Tools\Service\StripeClient;
 use Tds\Ext\Tools\Service\StripeException;
 use Tds\Ext\Tools\Service\WebhookVerifier;
 use Tds\Frontend\Contract\AbstractModule;
 use Tds\Frontend\Contract\ApiDocSource;
 use Tds\Frontend\Contract\CacheEvent;
+use Tds\Frontend\Contract\ConnectedSiteCache;
 use Tds\Frontend\Contract\PermissionDef;
+use Tds\Frontend\Contract\ReportingSiteCache;
 use Tds\Frontend\Contract\SettingDef;
 use Tds\Frontend\Contract\SettingsStore;
 use Tds\Frontend\Contract\SiteCache;
+use Tds\Frontend\Contract\SiteConnectionException;
+use Tds\Frontend\Contract\SiteConnections;
 use Tds\Frontend\Contract\SiteKeyProtected;
 use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
@@ -32,15 +35,17 @@ use Throwable;
  *
  * Owns the tool catalog config: which tools are enabled, require login, are
  * premium (+ price), and the AdSense config. The tool *list* is owned by the
- * frontend packs and flows in via the token-gated registry sync
- * (`POST /tools/registry`, called by the site build). The public site reads the
+ * frontend packs and flows in via the paired site's scoped registry sync
+ * (`POST /tools/registry`, called by the site server). The public site reads the
  * merged catalog from `GET /tools/catalog` (unauthenticated). Admins manage the
- * overrides via `/admin/tools`; a change fires a rebuild of the static site.
+ * overrides via `/admin/tools`; a change refreshes only the connected site's
+ * affected cache paths.
  *
  * Auth via the core {@see UserContext}: admin routes need `tools:manage` (admins
- * bypass); the catalog GET is public; the registry POST is token-gated. Config
- * (AdSense, rebuild, registry token) via the core {@see SettingsStore} (ns=tools),
- * DB-first with env fallback.
+ * bypass); the catalog GET is public; the registry POST requires the paired,
+ * resource-bound site key. AdSense and premium config use the core
+ * {@see SettingsStore} (ns=tools), DB-first with env fallback. A legacy registry
+ * token remains accepted for this migration release but has no panel field.
  */
 final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyProtected
 {
@@ -71,18 +76,8 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             new SettingDef('adsense_publisher_id', 'AdSense Publisher-ID (ca-pub-…)', false, 'tools'),
             new SettingDef('adsense_slot_catalog', 'AdSense Slot (Übersicht)', false, 'tools'),
             new SettingDef('adsense_slot_tool', 'AdSense Slot (Tool-Seite)', false, 'tools'),
-            new SettingDef('registry_token', 'Registry-Sync-Token', true, 'tools'),
-            new SettingDef('rebuild_repo', 'Rebuild-Repo (owner/name)', false, 'tools', 'Tracht-Digital-Solutions/tds-tools-frontend'),
-            // release.yml, NOT dev.yml: tds-tools-frontend deleted its dev.yml on
-            // 2026-08-24 when the deploy stopped running on every push. The
-            // dispatch is best-effort and never throws, so the stale default
-            // meant every catalog change 404'd against GitHub in silence.
-            new SettingDef('rebuild_workflow', 'Rebuild-Workflow', false, 'tools', 'release.yml'),
-            new SettingDef('rebuild_token', 'Rebuild-Token (GitHub PAT)', true, 'tools'),
-            // The page cache of the public site. Separate from the rebuild
-            // pair above and NOT interchangeable with it: a rebuild ships code
-            // through CI, this re-renders a page from content that is already
-            // saved. Both exist because both jobs exist.
+            // One-release fallback for installations not paired yet. These are
+            // hidden from the UI; a paired connection always takes priority.
             new SettingDef('cache_url', 'Seiten-Cache: Basis-URL der Tools-Site', false, 'tools', 'https://tools.tracht-digital.de'),
             new SettingDef('cache_token', 'Seiten-Cache: Token', true, 'tools'),
             new SettingDef('stripe_secret_key', 'Stripe Secret Key (Premium)', true, 'tools'),
@@ -152,24 +147,24 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
 
         // --- Registry sync (token-gated; the site build upserts its packs) ----
         //
-        // TWO credentials are accepted. A **site key** for the `tools` site is
-        // the way forward: it is issued in the panel, revocable, records when it
-        // was last used, and is the same thing every other public site presents.
-        // The legacy `registry_token` keeps working for one release, because the
-        // token is typed into the /install wizard by a human and an operator
-        // mid-setup should not be stopped by an upgrade.
-        //
-        // The site id is passed to verify() rather than read from the body: a
-        // key belongs to exactly one site, and trusting a `site` field sent
-        // alongside the key would let the blog's key write the tools catalog.
+        // A paired, scoped tools key is authoritative. The legacy token remains
+        // accepted for one release only, without any panel field.
         $app->post('/tools/registry', function (Request $req, Response $res) use ($c): Response {
             $body = (array) $req->getParsedBody();
-            $provided = (string) ($body['token'] ?? ($body['key'] ?? self::bearer($req)));
+            $provided = trim($req->getHeaderLine('X-TDS-Site-Key'));
+            if ($provided === '') {
+                $provided = (string) ($body['token'] ?? ($body['key'] ?? self::bearer($req)));
+            }
 
-            if ($provided !== '' && self::siteKeys($c)?->verify($provided, 'tools') !== null) {
+            $identity = $provided !== '' ? self::siteKeys($c)?->verify($provided) : null;
+            if ($identity !== null
+                && $identity->resourceType === 'tools'
+                && $identity->resourceId === 'tools'
+                && $identity->allows('/tools/registry')) {
                 $tools = is_array($body['tools'] ?? null) ? $body['tools'] : [];
                 $n = $c->get(ToolConfigRepository::class)->upsertRegistry($tools);
-                return self::json($res, ['ok' => true, 'synced' => $n]);
+                $cache = self::fireCache($c, null, null, 'catalog');
+                return self::json($res, array_merge(['ok' => true, 'synced' => $n], $cache));
             }
 
             $configured = self::store($c)?->getSecret(self::NS, 'registry_token');
@@ -189,7 +184,8 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             }
             $tools = is_array($body['tools'] ?? null) ? $body['tools'] : [];
             $n = $c->get(ToolConfigRepository::class)->upsertRegistry($tools);
-            return self::json($res, ['ok' => true, 'synced' => $n]);
+            $cache = self::fireCache($c, null, null, 'catalog');
+            return self::json($res, array_merge(['ok' => true, 'synced' => $n, 'legacy_auth' => true], $cache));
         });
 
         // --- Admin: manage the catalog overrides ------------------------------
@@ -198,6 +194,59 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
                 return $deny;
             }
             return self::json($res, ['tools' => $c->get(ToolConfigRepository::class)->all()]);
+        });
+
+        $app->get('/admin/tools/connection', function (Request $req, Response $res) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $connections = self::connections($c);
+            if ($connections === null) {
+                return self::json($res, ['error' => 'Site connection service is not available'], 503);
+            }
+            $connection = $connections->get('tools', 'tools');
+            return $connection === null
+                ? self::json($res, ['error' => 'Connection not found'], 404)
+                : self::json($res, ['connection' => $connection->toArray()]);
+        });
+
+        $app->delete('/admin/tools/connection', function (Request $req, Response $res) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $connections = self::connections($c);
+            if ($connections === null) {
+                return self::json($res, ['error' => 'Site connection service is not available'], 503);
+            }
+            return self::json($res, ['ok' => true, 'deleted' => $connections->delete('tools', 'tools')]);
+        });
+
+        $app->post('/admin/tools/connection/pairing', function (Request $req, Response $res) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $connections = self::connections($c);
+            if ($connections === null) {
+                return self::json($res, ['error' => 'Site connection service is not available'], 503);
+            }
+            $body = (array) $req->getParsedBody();
+            $origin = trim((string) ($body['origin'] ?? ''));
+            try {
+                $pairing = $connections->createPairing(
+                    'tools',
+                    'tools',
+                    $origin,
+                    'tools',
+                    ['tools' => 'tools'],
+                    ['/tools/catalog', '/tools/guides', '/tools/registry'],
+                );
+                return self::json($res, $connections->deliverPairing($pairing, self::apiBase($req))->toArray(), 201);
+            } catch (SiteConnectionException $e) {
+                return self::json($res, ['error' => $e->getMessage(), 'code' => $e->errorCode], $e->httpStatus);
+            } catch (Throwable $e) {
+                error_log('[tools] pairing failed: ' . $e->getMessage());
+                return self::json($res, ['error' => 'Pairing could not be created'], 503);
+            }
         });
 
         $app->put('/admin/tools/{id}', function (Request $req, Response $res, array $args) use ($c): Response {
@@ -209,16 +258,8 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             if (!$updated) {
                 return self::json($res, ['error' => 'Not found or nothing to update'], 404);
             }
-            self::fireRebuild($c, 'tool-config-change');
-            return self::json($res, ['ok' => true]);
-        });
-
-        $app->post('/admin/tools/rebuild', function (Request $req, Response $res) use ($c): Response {
-            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
-                return $deny;
-            }
-            self::fireRebuild($c, 'manual-rebuild');
-            return self::json($res, ['ok' => true]);
+            $cache = self::fireCache($c, (string) $args['id'], null);
+            return self::json($res, array_merge(['ok' => true], $cache));
         });
 
         // --- Admin: the tool pages' copy --------------------------------------
@@ -239,8 +280,8 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             }
             $toolId = (string) $args['id'];
             $c->get(ToolGuideRepository::class)->save($toolId, $lang, (array) $req->getParsedBody());
-            self::fireCache($c, $toolId, $lang);
-            return self::json($res, ['ok' => true]);
+            $cache = self::fireCache($c, $toolId, $lang);
+            return self::json($res, array_merge(['ok' => true], $cache));
         });
 
         $app->delete('/admin/tools/guides/{id}/{lang}', function (Request $req, Response $res, array $args) use ($c): Response {
@@ -250,23 +291,35 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             $lang = strtolower((string) $args['lang']);
             $toolId = (string) $args['id'];
             $c->get(ToolGuideRepository::class)->delete($toolId, $lang);
-            self::fireCache($c, $toolId, $lang);
-            return self::json($res, ['ok' => true]);
+            $cache = self::fireCache($c, $toolId, $lang);
+            return self::json($res, array_merge(['ok' => true], $cache));
         });
 
         // --- Admin: rebuild the public site's page cache ----------------------
         //
-        // Distinct from /admin/tools/rebuild above, which dispatches a CI build.
-        // This one re-renders pages from content that is already saved, in
-        // seconds, and is what an editor reaches for.
+        // Re-renders pages from content that is already saved; it never deploys.
         $app->post('/admin/tools/cache/rebuild', function (Request $req, Response $res) use ($c): Response {
             if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
                 return $deny;
             }
             $body = (array) $req->getParsedBody();
             $toolId = isset($body['tool_id']) ? (string) $body['tool_id'] : null;
-            self::fireCache($c, $toolId, null);
-            return self::json($res, ['ok' => true]);
+            $eventType = isset($body['event']) && $body['event'] === 'settings' ? 'catalog' : 'tool';
+            $connection = self::connection($c);
+            if ($connection === null) {
+                $legacyUrl = self::setting($c, 'cache_url', 'TOOLS_CACHE_URL', '');
+                if (trim($legacyUrl) === '') {
+                    return self::json($res, array_merge(
+                        ['error' => 'Tools site is not connected'],
+                        self::emptyCacheReport('not_configured'),
+                    ), 503);
+                }
+                if (self::normalizeOrigin($legacyUrl) === null) {
+                    return self::json($res, ['error' => 'Invalid cache origin'], 422);
+                }
+            }
+            $cache = self::fireCache($c, $toolId, null, $eventType);
+            return self::json($res, array_merge(['ok' => $cache['cached']], $cache), self::manualCacheStatus($cache));
         });
 
         // --- Dashboard widget summary (admin) ---------------------------------
@@ -377,38 +430,113 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
      *
      * Never throws and never fails the save: a site that is down, moved or not
      * configured yet must not turn "save this guide" into an error. The guide
-     * is stored either way and the operator has a rebuild button to catch up.
+     * is stored either way and the operator can retry the targeted cache refresh.
      *
      * `has()` is legitimate here because SiteCache is an INTERFACE — the base
      * either bound an implementation or it did not. On a concrete class the
      * same check would always answer true (PHP-DI autowires), which is the
      * trap that left six modules binding nothing at all.
      */
-    private static function fireCache(ContainerInterface $c, ?string $toolId, ?string $lang): void
+    /** @return array{cache_status:string,cached:bool,rebuilt:array,skipped:array,failed:array,unknownEvents:array} */
+    private static function fireCache(ContainerInterface $c, ?string $toolId, ?string $lang, string $type = 'tool'): array
     {
-        if (!$c->has(SiteCache::class)) {
-            return;
+        $event = new CacheEvent($type, $toolId, $lang);
+        try {
+            $connection = self::connection($c);
+            if ($connection !== null && $c->has(ConnectedSiteCache::class)) {
+                return $c->get(ConnectedSiteCache::class)->refresh('tools', 'tools', $event)->toArray();
+            }
+            if ($connection !== null) {
+                return self::emptyCacheReport('not_configured');
+            }
+            if (!$c->has(SiteCache::class)) {
+                return self::emptyCacheReport('not_configured');
+            }
+            $url = self::setting($c, 'cache_url', 'TOOLS_CACHE_URL', '');
+            $token = self::store($c)?->getSecret(self::NS, 'cache_token');
+            if ($token === null || $token === '') {
+                $token = self::env('TOOLS_CACHE_TOKEN', '');
+            }
+            $cache = $c->get(SiteCache::class);
+            if (!$cache->isConfigured($url, $token)) {
+                return self::emptyCacheReport('not_configured');
+            }
+            if ($cache instanceof ReportingSiteCache) {
+                return $cache->rebuildWithResult($url, $token, [$event])->toArray();
+            }
+            $cache->rebuild($url, $token, [$event]);
+            $report = self::emptyCacheReport('skipped');
+            $report['unknownEvents'][] = ['reason' => 'legacy_transport_has_no_result'];
+            return $report;
+        } catch (Throwable $e) {
+            error_log('[tools] page-cache request failed: ' . $e->getMessage());
+            $report = self::emptyCacheReport('failed');
+            $report['failed'][] = ['reason' => 'transport_error'];
+            return $report;
         }
-        $url = self::setting($c, 'cache_url', 'TOOLS_CACHE_URL', '');
-        $token = self::store($c)?->getSecret(self::NS, 'cache_token');
-        if ($token === null || $token === '') {
-            $token = self::env('TOOLS_CACHE_TOKEN', '');
-        }
-
-        $c->get(SiteCache::class)->rebuild($url, $token, [
-            new CacheEvent('tool', $toolId, $lang),
-        ]);
     }
 
-    private static function fireRebuild(ContainerInterface $c, string $reason): void
+    private static function connections(ContainerInterface $c): ?SiteConnections
     {
-        $token = self::store($c)?->getSecret(self::NS, 'rebuild_token');
-        if ($token === null || $token === '') {
-            $token = self::env('TOOLS_REBUILD_TOKEN', '');
+        try {
+            return $c->has(SiteConnections::class) ? $c->get(SiteConnections::class) : null;
+        } catch (Throwable) {
+            return null;
         }
-        $repo = self::setting($c, 'rebuild_repo', 'TOOLS_REBUILD_REPO', '');
-        $workflow = self::setting($c, 'rebuild_workflow', 'TOOLS_REBUILD_WORKFLOW', 'release.yml');
-        (new RebuildTrigger($token))->trigger($repo !== '' ? $repo : null, $workflow, $reason);
+    }
+
+    private static function connection(ContainerInterface $c): mixed
+    {
+        try {
+            return self::connections($c)?->get('tools', 'tools');
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    private static function apiBase(Request $req): string
+    {
+        $uri = $req->getUri();
+        return $uri->getScheme() . '://' . $uri->getAuthority();
+    }
+
+    /** @return array{cache_status:string,cached:bool,rebuilt:array,skipped:array,failed:array,unknownEvents:array} */
+    private static function emptyCacheReport(string $status): array
+    {
+        return [
+            'cache_status' => $status,
+            'cached' => false,
+            'rebuilt' => [],
+            'skipped' => [],
+            'failed' => [],
+            'unknownEvents' => [],
+        ];
+    }
+
+    /** @param array{cache_status:string,cached:bool} $report */
+    private static function manualCacheStatus(array $report): int
+    {
+        if ($report['cache_status'] === 'refreshed' && $report['cached'] === true) {
+            return 202;
+        }
+        return $report['cache_status'] === 'not_configured' ? 503 : 502;
+    }
+
+    private static function normalizeOrigin(string $value): ?string
+    {
+        $value = rtrim(trim($value), '/');
+        $parts = parse_url($value);
+        if (!is_array($parts)
+            || !in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
+            || trim((string) ($parts['host'] ?? '')) === ''
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || isset($parts['query'])
+            || isset($parts['fragment'])
+            || (isset($parts['path']) && $parts['path'] !== '')) {
+            return null;
+        }
+        return $value;
     }
 
     private static function bearer(Request $req): string

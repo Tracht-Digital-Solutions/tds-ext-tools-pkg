@@ -17,29 +17,14 @@ const api = apiFetch;
 
 /**
  * Tool-catalog management: one row per tool (enabled / login / premium / price),
- * saved to the backend which fires a rebuild of the public site. The tool list
- * is owned by the public site's composed packs, so the empty state points at the
- * transfer rather than offering a "create tool" action.
- *
- * ### The empty state is the whole feature when the table is empty
- *
- * It used to read "Sie erscheinen automatisch, sobald die Website gebaut wurde
- * und ihren Katalog synchronisiert hat." That was false, and it is why this
- * page sat empty for the platform's entire life: the site's build-time sync was
- * gated on `TOOLS_REGISTRY_TOKEN`, which no workflow exported and which Vite
- * would never have injected anyway (no `PUBLIC_` prefix, no `envField` schema).
- * So the operator was told to wait for something that could not happen, and the
- * sync fails soft by design, so nothing anywhere went red.
- *
- * The transfer is host-side now (`/install` posts
- * `dist/tools-catalog.json`), and it needs two steps IN ORDER — the registry
- * answers 503 until the token exists in the panel. Naming both, in order, is
- * the difference between a dead page and a five-minute task.
+ * saved to the backend which refreshes the affected public pages. The tool list
+ * is owned by the public site's composed packs. Pairing gives that site a
+ * resource-bound key; its server then synchronises the built catalog on first
+ * start and whenever the catalog hash changes.
  */
 export default function ToolsManage() {
   const [tools, setTools] = useState<Tool[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = async () => {
@@ -63,7 +48,6 @@ export default function ToolsManage() {
 
   const save = async (tool: Tool) => {
     setBusy(tool.tool_id);
-    setStatus(null);
     const res = await api(`/admin/tools/${encodeURIComponent(tool.tool_id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -80,17 +64,16 @@ export default function ToolsManage() {
     // row 1's confirmation, and the banner sat at the top of the table while
     // the button that produced it was somewhere down the list. Per-row
     // outcomes belong in a toast, which also names the tool it is about.
-    if (res.ok) toast.success(`„${tool.name}“ gespeichert — Rebuild ausgelöst.`);
-    else toast.danger(`„${tool.name}“ konnte nicht gespeichert werden (HTTP ${res.status}).`);
-  };
-
-  const rebuild = async () => {
-    setBusy("__rebuild__");
-    setStatus(null);
-    const res = await api("/admin/tools/rebuild", { method: "POST" });
-    setBusy(null);
-    if (res.ok) toast.success("Rebuild der Website ausgelöst.");
-    else toast.danger(`Rebuild fehlgeschlagen (HTTP ${res.status}).`);
+    if (res.ok) {
+      const body = await res.json().catch(() => ({}));
+      if (body.cache_status === "refreshed" && body.cached === true) {
+        toast.success(`„${tool.name}“ gespeichert — Seiten-Cache aktualisiert.`);
+      } else if (body.cache_status === "not_configured") {
+        toast.warning(`„${tool.name}“ gespeichert — Tools-Site noch nicht verbunden.`);
+      } else {
+        toast.warning(`„${tool.name}“ gespeichert — Cache-Aktualisierung fehlgeschlagen.`);
+      }
+    } else toast.danger(`„${tool.name}“ konnte nicht gespeichert werden (HTTP ${res.status}).`);
   };
 
   if (tools === null) return <p><Spinner /></p>;
@@ -104,37 +87,17 @@ export default function ToolsManage() {
 
   return (
     <div className="tools-manage space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm opacity-70">{tools.length} Tool(s)</p>
-        <button type="button" className="btn btn-ghost" onClick={rebuild} disabled={busy === "__rebuild__"} aria-busy={busy === "__rebuild__"}>Website neu bauen</button>
-      </div>
-
-      {/* Outcomes are toasts now; nothing else writes `status`, so this is
-          the empty-state hint only. */}
-      {status ? <p className="tds-alert" role="status">{status}</p> : null}
+      <p className="text-sm opacity-70">{tools.length} Tool(s)</p>
 
       {tools.length === 0 ? (
         <div className="tds-empty">
-          <p className="font-semibold">Noch keine Tools übertragen.</p>
+          <p className="font-semibold">Noch keine Tools synchronisiert.</p>
           <p className="mt-2">
-            Der Tool-Katalog wird nicht automatisch übertragen — er muss einmal vom Host
-            der Tools-Website an diese API geschickt werden. Zwei Schritte, in dieser
-            Reihenfolge:
+            Verbinden Sie die Tools-Site unter Einstellungen → Tools mit der API. Der
+            veröffentlichte Katalog wird danach beim Serverstart automatisch über den
+            Site-Key synchronisiert.
           </p>
-          <ol className="mt-2 ml-5 list-decimal space-y-1 text-left">
-            <li>
-              Unter <a href="/einstellungen">Einstellungen → Tools / AdSense</a> einen
-              <strong> Registry-Sync-Token</strong> setzen und speichern.
-            </li>
-            <li>
-              <code>https://tools.tracht-digital.de/install</code> aufrufen, denselben Token
-              eintragen und den Schritt <strong>„Tool-Katalog übertragen"</strong> ausführen.
-            </li>
-          </ol>
-          <p className="mt-2">
-            Ohne Schritt 1 lehnt die Registry die Übertragung ab (HTTP 503). Danach
-            erscheinen die Tools hier und lassen sich einzeln steuern.
-          </p>
+          <p className="mt-2"><a href="/einstellungen">Verbindung einrichten</a></p>
         </div>
       ) : (
         <div className="overflow-x-auto">

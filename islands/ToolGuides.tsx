@@ -164,7 +164,14 @@ export default function ToolGuides() {
     });
     setBusy(false);
     if (res.ok) {
-      toast.success("Gespeichert — der Seiten-Cache wird neu gebaut.");
+      const body = await res.json().catch(() => ({}));
+      if (body.cache_status === "refreshed" && body.cached === true) {
+        toast.success("Gespeichert — Seiten-Cache aktualisiert.");
+      } else if (body.cache_status === "not_configured") {
+        toast.warning("Gespeichert — Tools-Site noch nicht verbunden.");
+      } else {
+        toast.warning("Gespeichert — Cache-Aktualisierung fehlgeschlagen.");
+      }
       void load();
     } else {
       // The status code is what tells "session expired" from "service down".
@@ -180,7 +187,12 @@ export default function ToolGuides() {
     });
     setBusy(false);
     if (res.ok) {
-      toast.success("Übersteuerung entfernt — der mitgelieferte Text greift wieder.");
+      const body = await res.json().catch(() => ({}));
+      if (body.cache_status === "refreshed" && body.cached === true) {
+        toast.success("Übersteuerung entfernt — Seiten-Cache aktualisiert.");
+      } else {
+        toast.warning("Übersteuerung entfernt — Cache-Aktualisierung steht noch aus.");
+      }
       setDraft(EMPTY);
       void load();
     } else {

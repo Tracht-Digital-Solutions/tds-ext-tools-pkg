@@ -2,10 +2,10 @@ import { defineExtension } from "@tracht-digital-solutions/tds-frontend-contract
 
 /**
  * Public tools platform admin manifest. Manages the tool catalog config (which
- * tools are enabled / require login / are premium + price) and the AdSense +
- * rebuild config for the public `tds-tools` site. The tool *list* itself is
- * owned by the frontend `tds-tool-*` packs and syncs into the backend via the
- * site build; this extension edits the overrides.
+ * tools are enabled / require login / are premium + price), AdSense, API
+ * pairing and targeted cache refreshes for the public `tds-tools` site. The
+ * tool *list* itself is owned by the frontend `tds-tool-*` packs and syncs via
+ * the paired site server; this extension edits the overrides.
  */
 export default defineExtension({
   id: "tools",

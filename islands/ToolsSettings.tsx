@@ -10,15 +10,21 @@ interface Masked {
   value?: string;
 }
 
+interface Connection {
+  origin?: string;
+  status?: string;
+  connected_at?: string | null;
+  last_seen_at?: string | null;
+}
+
 const api = apiFetch;
 const NS = "/admin/settings/tools";
 
 /**
- * Tools settings — AdSense (publisher id + slots + master switch), the public
- * site rebuild target (repo/workflow/token), the registry-sync token, the page
- * cache of the public site, and the Stripe premium layer. Stored in the core
- * runtime settings store (admin-only). Secrets come back masked; a blank secret
- * on save keeps the existing value.
+ * Tools settings — one-click API connection, AdSense and the Stripe premium
+ * layer. Runtime credentials for the public site are managed by pairing, never
+ * by GitHub or editable token fields. Stripe secrets stay in the core settings
+ * store and come back masked; a blank secret on save keeps the existing value.
  *
  * The cache and Stripe blocks were declared in `ToolsModule::settings()` from
  * the start and rendered by nothing, so the page-cache rebuild and the whole
@@ -35,16 +41,12 @@ export default function ToolsSettings() {
   const [publisherId, setPublisherId] = useState("");
   const [slotCatalog, setSlotCatalog] = useState("");
   const [slotTool, setSlotTool] = useState("");
-  const [rebuildRepo, setRebuildRepo] = useState("");
-  const [rebuildWorkflow, setRebuildWorkflow] = useState("release.yml");
-  const [rebuildToken, setRebuildToken] = useState("");
-  const [registryToken, setRegistryToken] = useState("");
-  const [rebuildState, setRebuildState] = useState<Masked | null>(null);
-  const [registryState, setRegistryState] = useState<Masked | null>(null);
-
-  const [cacheUrl, setCacheUrl] = useState("");
-  const [cacheToken, setCacheToken] = useState("");
-  const [cacheState, setCacheState] = useState<Masked | null>(null);
+  const [connection, setConnection] = useState<Connection | null>(null);
+  const [origin, setOrigin] = useState("");
+  const [connectionLoaded, setConnectionLoaded] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
+  const [installUrl, setInstallUrl] = useState<string | null>(null);
 
   const [currency, setCurrency] = useState("EUR");
   const [successUrl, setSuccessUrl] = useState("");
@@ -67,12 +69,6 @@ export default function ToolsSettings() {
     setPublisherId(map.get("adsense_publisher_id")?.value || "");
     setSlotCatalog(map.get("adsense_slot_catalog")?.value || "");
     setSlotTool(map.get("adsense_slot_tool")?.value || "");
-    setRebuildRepo(map.get("rebuild_repo")?.value || "");
-    setRebuildWorkflow(map.get("rebuild_workflow")?.value || "release.yml");
-    setRebuildState(map.get("rebuild_token") ?? null);
-    setRegistryState(map.get("registry_token") ?? null);
-    setCacheUrl(map.get("cache_url")?.value || "");
-    setCacheState(map.get("cache_token") ?? null);
     setCurrency(map.get("currency")?.value || "EUR");
     setSuccessUrl(map.get("checkout_success_url")?.value || "");
     setCancelUrl(map.get("checkout_cancel_url")?.value || "");
@@ -81,8 +77,29 @@ export default function ToolsSettings() {
     setLoaded(true);
   };
 
+  const loadConnection = async () => {
+    try {
+      const res = await api("/admin/tools/connection");
+      if (res.status === 404) {
+        setConnection(null);
+      } else if (res.ok) {
+        const body = await res.json();
+        const next = (body.connection ?? body) as Connection;
+        setConnection(next);
+        setOrigin(next.origin ?? "");
+      } else {
+        setConnectionStatus(`Verbindungsstatus konnte nicht geladen werden (HTTP ${res.status}).`);
+      }
+    } catch {
+      setConnectionStatus("Verbindungsstatus konnte nicht geladen werden (Netzwerkfehler).");
+    } finally {
+      setConnectionLoaded(true);
+    }
+  };
+
   useEffect(() => {
     void load();
+    void loadConnection();
   }, []);
 
   const save = async () => {
@@ -93,12 +110,6 @@ export default function ToolsSettings() {
       { key: "adsense_publisher_id", secret: false, value: publisherId.trim() },
       { key: "adsense_slot_catalog", secret: false, value: slotCatalog.trim() },
       { key: "adsense_slot_tool", secret: false, value: slotTool.trim() },
-      { key: "rebuild_repo", secret: false, value: rebuildRepo.trim() },
-      { key: "rebuild_workflow", secret: false, value: rebuildWorkflow.trim() || "release.yml" },
-      { key: "rebuild_token", secret: true, value: rebuildToken.trim() },
-      { key: "registry_token", secret: true, value: registryToken.trim() },
-      { key: "cache_url", secret: false, value: cacheUrl.trim() },
-      { key: "cache_token", secret: true, value: cacheToken.trim() },
       { key: "currency", secret: false, value: currency.trim().toUpperCase() || "EUR" },
       { key: "checkout_success_url", secret: false, value: successUrl.trim() },
       { key: "checkout_cancel_url", secret: false, value: cancelUrl.trim() },
@@ -110,17 +121,68 @@ export default function ToolsSettings() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings }),
     });
-    setBusy(false);
     if (res.ok) {
-      setRebuildToken("");
-      setRegistryToken("");
-      setCacheToken("");
       setStripeKey("");
       setStripeHook("");
-      toast.success("Gespeichert.");
+      const cacheRes = await api("/admin/tools/cache/rebuild", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "settings" }),
+      });
+      const cacheBody = await cacheRes.json().catch(() => ({}));
+      if (cacheRes.status === 202 && cacheBody.cached === true) {
+        toast.success("Gespeichert — Seiten-Cache aktualisiert.");
+      } else if (cacheRes.status === 503) {
+        toast.warning("Gespeichert — die Tools-Site ist noch nicht für Cache-Aktualisierungen verbunden.");
+      } else {
+        toast.warning(`Gespeichert — Cache-Aktualisierung fehlgeschlagen (HTTP ${cacheRes.status}).`);
+      }
       void load();
     } else {
       toast.danger(`Speichern fehlgeschlagen (HTTP ${res.status}).`);
+    }
+    setBusy(false);
+  };
+
+  const connect = async () => {
+    setConnecting(true);
+    setConnectionStatus(null);
+    setInstallUrl(null);
+    try {
+      const res = await api("/admin/tools/connection/pairing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ origin: origin.trim(), profile: "tools" }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setConnectionStatus(res.status === 422
+          ? (body.error ?? "Bitte eine reine HTTPS-Adresse ohne Pfad eingeben.")
+          : `Verbinden fehlgeschlagen (HTTP ${res.status}).`);
+        return;
+      }
+      setInstallUrl(body.fallback_url ?? body.install_url ?? null);
+      if (body.delivered === true || body.connected === true) {
+        toast.success("Tools-Site mit der API verbunden.");
+        await loadConnection();
+      } else {
+        setConnectionStatus("Die Tools-Site war nicht direkt erreichbar. Öffnen Sie den Einrichtungslink auf dem Site-Server.");
+      }
+    } catch {
+      setConnectionStatus("Verbinden fehlgeschlagen (Netzwerkfehler).");
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const disconnect = async () => {
+    const res = await api("/admin/tools/connection", { method: "DELETE" });
+    if (res.ok) {
+      setConnection(null);
+      setInstallUrl(null);
+      toast.success("Verbindung getrennt.");
+    } else {
+      toast.danger(`Trennen fehlgeschlagen (HTTP ${res.status}).`);
     }
   };
 
@@ -153,43 +215,26 @@ export default function ToolsSettings() {
       </fieldset>
 
       <fieldset className="space-y-3">
-        <legend className="text-sm font-semibold">Website-Rebuild</legend>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label className="block">
-            <span className="text-sm">Repo (owner/name)</span>
-            <input className="field-boxed" type="text" value={rebuildRepo} onChange={(e) => setRebuildRepo(e.target.value)} placeholder="Tracht-Digital-Solutions/tds-tools-frontend" />
-          </label>
-          <label className="block">
-            <span className="text-sm">Workflow</span>
-            <input className="field-boxed" type="text" value={rebuildWorkflow} onChange={(e) => setRebuildWorkflow(e.target.value)} placeholder="release.yml" />
-          </label>
-        </div>
-        <label className="block">
-          <span className="text-sm">Rebuild-Token (GitHub PAT) <em className="opacity-60">({hint(rebuildState)})</em></span>
-          <input className="field-boxed" type="password" value={rebuildToken} onChange={(e) => setRebuildToken(e.target.value)} placeholder="ghp_… (leer = behalten)" autoComplete="off" />
-        </label>
-        <label className="block">
-          <span className="text-sm">Registry-Sync-Token <em className="opacity-60">({hint(registryState)})</em></span>
-          <input className="field-boxed" type="password" value={registryToken} onChange={(e) => setRegistryToken(e.target.value)} placeholder="(leer = behalten)" autoComplete="off" />
-        </label>
-      </fieldset>
-
-      <fieldset className="space-y-3">
-        <legend className="text-sm font-semibold">Seiten-Cache</legend>
+        <legend className="text-sm font-semibold">API-Verbindung</legend>
         <p className="text-sm opacity-70">
-          Re-rendert einzelne Seiten der öffentlichen Website, wenn hier Inhalte
-          gespeichert werden — in Sekunden, ohne CI-Build. Ohne Token passiert
-          nichts: ein unauthentifizierter Rebuild wäre auf einem öffentlichen
-          Host beliebig auslösbar.
+          Die Tools-Site übernimmt API-Schlüssel und Cache-Zugang automatisch. Ein
+          separates Registry-Token oder GitHub-Rebuild ist nicht erforderlich.
         </p>
         <label className="block">
           <span className="text-sm">Basis-URL der Tools-Site</span>
-          <input className="field-boxed" type="url" value={cacheUrl} onChange={(e) => setCacheUrl(e.target.value)} placeholder="https://tools.tracht-digital.de" />
+          <input className="field-boxed" type="url" value={origin} onChange={(e) => setOrigin(e.target.value)} placeholder="https://tools.tracht-digital.de" />
         </label>
-        <label className="block">
-          <span className="text-sm">Cache-Token <em className="opacity-60">({hint(cacheState)})</em></span>
-          <input className="field-boxed" type="password" value={cacheToken} onChange={(e) => setCacheToken(e.target.value)} placeholder="Token der Tools-Site (leer = behalten)" autoComplete="off" />
-        </label>
+        {!connectionLoaded ? <p><Spinner size="sm" /> Verbindungsstatus wird geladen …</p> : connection ? (
+          <p className="tds-alert tds-alert--success" role="status">Verbunden mit {connection.origin ?? origin}</p>
+        ) : <p className="tds-alert" role="status">Noch nicht mit der API verbunden.</p>}
+        {connectionStatus ? <p className="tds-alert tds-alert--danger" role="alert">{connectionStatus}</p> : null}
+        {installUrl ? <p><a className="btn btn-ghost" href={installUrl}>Einrichtungslink öffnen</a></p> : null}
+        <div className="tds-toolbar">
+          <button type="button" className="btn btn-primary" onClick={connect} disabled={connecting || origin.trim() === ""}>
+            {connecting ? <Spinner size="sm" /> : connection ? "Neu verbinden" : "Mit API verbinden"}
+          </button>
+          {connection ? <button type="button" className="btn btn-ghost" onClick={disconnect}>Verbindung trennen</button> : null}
+        </div>
       </fieldset>
 
       <fieldset className="space-y-3">

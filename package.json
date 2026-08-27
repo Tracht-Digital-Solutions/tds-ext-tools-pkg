@@ -1,7 +1,7 @@
 {
   "name": "@tracht-digital-solutions/tds-ext-tools",
   "version": "0.3.0",
-  "description": "Public tools platform admin for the TDS panel: tool catalog management (enabled/login/premium/price), AdSense + rebuild config. Ships the frontend manifest, PHP Module, and the dual CI/publish pipeline.",
+  "description": "Public tools platform admin for the TDS panel: tool catalog management, AdSense, premium settings, API pairing and targeted cache refreshes.",
   "license": "UNLICENSED",
   "private": false,
   "type": "module",
@@ -32,7 +32,7 @@
     "test:run": "vitest run"
   },
   "dependencies": {
-    "@tracht-digital-solutions/tds-frontend-contract": "^1.0.0"
+    "@tracht-digital-solutions/tds-frontend-contract": "^1.11.0"
   },
   "peerDependencies": {
     "@tracht-digital-solutions/tds-shared": ">=0.19.0",

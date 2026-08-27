@@ -1,62 +1,23 @@
-
-/**
- * Path + query of a request. The island calls an ABSOLUTE URL now (via
- * `apiFetch`); a relative one would hit the product's own static host and come
- * back as SPA-fallback HTML with a 200. Matching on the path keeps the route
- * matchers below anchored.
- */
-const pathOf = (url: string) => String(url).replace(/^https?:\/\/[^/]+/i, "");
-
-/**
- * This island's own calls, in order, with tds-shared's runtime-config read
- * dropped.
- *
- * Filtered by that PATH and deliberately NOT by the API host: selecting the
- * call because it is on api.tracht-digital.de would make the "it is absolute"
- * assertion below prove itself. A relative `fetch("/admin/tools")` still lands
- * in this list — and still fails, which is the point of that assertion.
- */
-const apiCalls = (m: { mock: { calls: unknown[][] } }) =>
-  m.mock.calls.filter((c) => pathOf(String(c[0])) !== "/tds-runtime.json");
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import ToolsSettings from "./ToolsSettings";
+import { primeRuntimeConfig } from "@tracht-digital-solutions/tds-shared/api";
 import { TOAST_EVENT } from "@tracht-digital-solutions/tds-shared/toast";
+import ToolsSettings from "./ToolsSettings";
 
-/**
- * AdSense config + the public-site rebuild target + the registry-sync token,
- * in the core runtime settings store.
- *
- * TWO secrets live here (the GitHub rebuild PAT and the registry token), and
- * both follow the store's contract: they come back MASKED (`configured` +
- * `last4`, never the value) and **a blank field on save means "keep the
- * existing one"**. Sending a mask or an empty-meaning-erase would silently
- * break the rebuild pipeline, whose only symptom is a public site that stops
- * updating.
- */
+type Reply = { status: number; body: unknown };
+type Call = { url: string; method: string; body: unknown };
 
-let calls: Array<{ url: string; method: string; body: unknown }> = [];
-let getReply: { status: number; body: unknown } = { status: 200, body: { settings: [] } };
-let putReply: { status: number; body: unknown } = { status: 200, body: {} };
-
-const NS = "/admin/settings/tools";
-const KEYS = [
+const SETTINGS = "/admin/settings/tools";
+const CONNECTION = "/admin/tools/connection";
+const PAIRING = "/admin/tools/connection/pairing";
+const CACHE = "/admin/tools/cache/rebuild";
+const SETTING_KEYS = [
   "ads_enabled",
   "adsense_publisher_id",
   "adsense_slot_catalog",
   "adsense_slot_tool",
-  "rebuild_repo",
-  "rebuild_workflow",
-  "rebuild_token",
-  "registry_token",
-  // The page cache and the premium layer were declared in the PHP Module from
-  // the start and rendered by nothing, so both were .env-only on a host where
-  // nobody edits .env. This list is what stops that recurring: the save test
-  // compares it to the posted set exactly, in both directions.
-  "cache_url",
-  "cache_token",
   "currency",
   "checkout_success_url",
   "checkout_cancel_url",
@@ -64,388 +25,221 @@ const KEYS = [
   "stripe_webhook_secret",
 ];
 
-/**
- * The keys that must be stored encrypted. Derived, not counted: the assertions
- * below used to hard-code "two masked hints", which silently became wrong the
- * moment the cache and Stripe blocks gained a UI.
- */
-const SECRET_KEYS = [
-  "rebuild_token",
-  "registry_token",
-  "cache_token",
-  "stripe_secret_key",
-  "stripe_webhook_secret",
-];
-
-/** Outcomes are toasts now — collected off the `tds:toast` bus. */
+let calls: Call[] = [];
+let settingsGet: Reply;
+let settingsPut: Reply;
+let connectionGet: Reply;
+let pairingPost: Reply;
+let cachePost: Reply;
+let connectionDelete: Reply;
 let toasts: Array<{ variant: string; message: string }> = [];
-const collectToast = (e: Event) => {
-  toasts.push((e as CustomEvent<{ variant: string; message: string }>).detail);
+
+const pathOf = (url: string) => String(url).replace(/^https?:\/\/[^/]+/i, "");
+const reply = ({ status, body }: Reply) =>
+  ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response;
+
+const collectToast = (event: Event) => {
+  toasts.push((event as CustomEvent<{ variant: string; message: string }>).detail);
 };
 
 beforeEach(() => {
-  toasts = [];
-  window.addEventListener(TOAST_EVENT, collectToast);
+  primeRuntimeConfig(null);
   calls = [];
-  getReply = { status: 200, body: { settings: [] } };
-  putReply = { status: 200, body: {} };
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (url: string, init?: RequestInit) => {
-      const method = init?.method ?? "GET";
-      calls.push({ url, method, body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined });
-      const reply = method === "PUT" ? putReply : getReply;
-      return { ok: reply.status < 300, status: reply.status, json: async () => reply.body } as Response;
-    }),
-  );
+  toasts = [];
+  settingsGet = { status: 200, body: { settings: [] } };
+  settingsPut = { status: 200, body: {} };
+  connectionGet = { status: 404, body: {} };
+  pairingPost = { status: 201, body: { delivered: true, connected: true } };
+  cachePost = { status: 202, body: { cached: true, cache_status: "refreshed" } };
+  connectionDelete = { status: 204, body: {} };
+  window.addEventListener(TOAST_EVENT, collectToast);
+
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    calls.push({ url: String(url), method, body });
+    const path = pathOf(String(url));
+    if (path === SETTINGS && method === "GET") return reply(settingsGet);
+    if (path === SETTINGS && method === "PUT") return reply(settingsPut);
+    if (path === CONNECTION && method === "GET") return reply(connectionGet);
+    if (path === CONNECTION && method === "DELETE") return reply(connectionDelete);
+    if (path === PAIRING && method === "POST") return reply(pairingPost);
+    if (path === CACHE && method === "POST") return reply(cachePost);
+    return reply({ status: 500, body: { error: "unexpected_test_request" } });
+  }));
 });
 
 afterEach(() => {
   window.removeEventListener(TOAST_EVENT, collectToast);
   cleanup();
+  vi.unstubAllGlobals();
 });
 
 const user = () => userEvent.setup({ delay: null });
-const stored = (pairs: Record<string, string>) => ({
-  status: 200,
-  body: { settings: Object.entries(pairs).map(([key, value]) => ({ key, secret: false, value })) },
-});
+const box = (name: string | RegExp) => screen.getByLabelText(name) as HTMLInputElement;
+const findCall = (path: string, method: string) =>
+  calls.find((call) => pathOf(call.url) === path && call.method === method);
 
 async function open() {
   render(<ToolsSettings />);
-  const u = user();
-  await waitFor(() => expect(calls.length).toBeGreaterThan(0));
   await screen.findByRole("button", { name: "Speichern" });
-  return u;
+  await waitFor(() => expect(findCall(CONNECTION, "GET")).toBeDefined());
+  return user();
 }
 
-const box = (name: string) => screen.getByLabelText(name) as HTMLInputElement;
-const rebuildTokenBox = () => screen.getByPlaceholderText("ghp_… (leer = behalten)") as HTMLInputElement;
-const registryTokenBox = () => screen.getByPlaceholderText("(leer = behalten)") as HTMLInputElement;
-const put = () => calls.find((c) => c.method === "PUT");
-const saved = () => (put()!.body as { settings: Array<{ key: string; secret: boolean; value: string }> }).settings;
-const setting = (key: string) => saved().find((s) => s.key === key)!;
-
 describe("loading", () => {
-  it("reads its own namespace of the settings store", async () => {
+  it("loads settings and the one tools-site connection from the API", async () => {
     await open();
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    expect(pathOf(apiCalls(fetchMock)[0]![0] as string)).toBe(NS);
-    // Absolute, on the API host. Every other assertion here matches the PATH,
-    // which a relative fetch satisfies too — so this is the one that fails if
-    // the call ever goes back to the product's own origin (whose SPA fallback
-    // answers 200 + HTML and turns into a silent empty state).
-    expect(String(apiCalls(fetchMock)[0]![0]).startsWith("https://api.tracht-digital.de/")).toBe(true);
-    expect(apiCalls(fetchMock)[0]![1]).toMatchObject({ credentials: "include" });
+    const settings = findCall(SETTINGS, "GET");
+    expect(settings).toBeDefined();
+    expect(settings!.url.startsWith("https://api.tracht-digital.de/")).toBe(true);
+    expect(findCall(CONNECTION, "GET")).toBeDefined();
   });
 
-  it("shows a loading line until the settings arrive", () => {
-    render(<ToolsSettings />);
-    expect(screen.getByLabelText("Wird geladen")).toBeTruthy();
-  });
-
-  it("leaves AdSense OFF until it is switched on", async () => {
-    // Ads render on a public, indexable site — nothing goes live unattended.
+  it("does not render GitHub, registry-token or cache-token fields", async () => {
     await open();
-    expect(box("AdSense aktivieren").checked).toBe(false);
+    expect(document.body.textContent).not.toContain("Repo (owner/name)");
+    expect(document.body.textContent).not.toContain("Rebuild-Token");
+    expect(document.body.textContent).not.toContain("Registry-Sync-Token");
+    expect(document.body.textContent).not.toContain("Cache-Token");
   });
 
-  it("reflects AdSense switched on", async () => {
-    getReply = stored({ ads_enabled: "1" });
-    await open();
-    expect(box("AdSense aktivieren").checked).toBe(true);
-  });
-
-  it("treats a stored 0 as off", async () => {
-    getReply = stored({ ads_enabled: "0" });
-    await open();
-    expect(box("AdSense aktivieren").checked).toBe(false);
-  });
-
-  it("fills the AdSense fields from the store", async () => {
-    getReply = stored({
-      adsense_publisher_id: "ca-pub-42",
-      adsense_slot_catalog: "111",
-      adsense_slot_tool: "222",
-    });
-    await open();
-    expect(box("Publisher-ID").value).toBe("ca-pub-42");
-    expect(box("Slot (Übersicht)").value).toBe("111");
-    expect(box("Slot (Tool-Seite)").value).toBe("222");
-  });
-
-  it("fills the rebuild target from the store", async () => {
-    getReply = stored({ rebuild_repo: "Tracht-Digital-Solutions/tds-tools-frontend", rebuild_workflow: "release.yml" });
-    await open();
-    expect(box("Repo (owner/name)").value).toBe("Tracht-Digital-Solutions/tds-tools-frontend");
-    expect(box("Workflow").value).toBe("release.yml");
-  });
-
-  it("defaults the workflow to release.yml", async () => {
-    await open();
-    expect(box("Workflow").value).toBe("release.yml");
-  });
-
-  it("leaves the repo empty rather than guessing one", async () => {
-    // A wrong repo here dispatches a rebuild of somebody else's site.
-    await open();
-    expect(box("Repo (owner/name)").value).toBe("");
-  });
-
-  it("reports EVERY secret as unconfigured when none is set", async () => {
-    await open();
-    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(SECRET_KEYS.length);
-  });
-
-  it("shows only the last four characters of a configured secret", async () => {
-    getReply = {
+  it("loads ordinary values and exposes only masked Stripe hints", async () => {
+    settingsGet = {
       status: 200,
       body: {
         settings: [
-          { key: "rebuild_token", secret: true, configured: true, last4: "aa11" },
-          { key: "registry_token", secret: true, configured: true, last4: "bb22" },
+          { key: "ads_enabled", secret: false, value: "1" },
+          { key: "adsense_publisher_id", secret: false, value: "ca-pub-42" },
+          { key: "currency", secret: false, value: "usd" },
+          { key: "stripe_secret_key", secret: true, configured: true, last4: "4242" },
+          { key: "stripe_webhook_secret", secret: true, configured: false, last4: null },
         ],
       },
     };
     await open();
-    expect(screen.getByText("(konfiguriert (…aa11))")).toBeTruthy();
-    expect(screen.getByText("(konfiguriert (…bb22))")).toBeTruthy();
-    // The three credentials this response does not mention stay unconfigured.
-    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(SECRET_KEYS.length - 2);
+    expect(box("AdSense aktivieren").checked).toBe(true);
+    expect(box("Publisher-ID").value).toBe("ca-pub-42");
+    expect(box("Währung").value).toBe("usd");
+    expect(screen.getByText("(konfiguriert (…4242))")).toBeTruthy();
+    expect(screen.getByText("(nicht konfiguriert)")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("sk_live");
   });
 
-  it("keeps each secret's hint apart", async () => {
-    // One shared hint would make a configured registry token look like a
-    // configured rebuild token, and vice versa.
-    getReply = {
+  it("shows the existing paired origin", async () => {
+    connectionGet = {
       status: 200,
-      body: { settings: [{ key: "registry_token", secret: true, configured: true, last4: "bb22" }] },
+      body: { connection: { origin: "https://tools.example", status: "connected" } },
     };
     await open();
-    expect(screen.getByText("(konfiguriert (…bb22))")).toBeTruthy();
-    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(SECRET_KEYS.length - 1);
-  });
-
-  it("copes with a configured secret that reports no last4", async () => {
-    getReply = {
-      status: 200,
-      body: { settings: [{ key: "rebuild_token", secret: true, configured: true, last4: null }] },
-    };
-    await open();
-    expect(screen.getByText("(konfiguriert (…????))")).toBeTruthy();
-  });
-
-  it("reports a KNOWN-BUT-EMPTY secret as unconfigured", async () => {
-    getReply = {
-      status: 200,
-      body: { settings: [{ key: "rebuild_token", secret: true, configured: false, last4: null }] },
-    };
-    await open();
-    expect(screen.getAllByText("(nicht konfiguriert)")).toHaveLength(SECRET_KEYS.length);
-  });
-
-  it("never renders a secret value even if the API leaks one", async () => {
-    getReply = {
-      status: 200,
-      body: { settings: [{ key: "rebuild_token", secret: true, configured: true, last4: "aa11", value: "ghp_secret" }] },
-    };
-    await open();
-    expect(document.body.textContent).not.toContain("ghp_secret");
-    expect(rebuildTokenBox().value).toBe("");
-  });
-
-  it("keeps both token fields masked", async () => {
-    await open();
-    expect(rebuildTokenBox().getAttribute("type")).toBe("password");
-    expect(registryTokenBox().getAttribute("type")).toBe("password");
-    expect(rebuildTokenBox().getAttribute("autocomplete")).toBe("off");
-  });
-
-  it("names the reason when the user is not an admin", async () => {
-    getReply = { status: 403, body: {} };
-    render(<ToolsSettings />);
-    expect(await screen.findByText("Nur für Administratoren.")).toBeTruthy();
-  });
-
-  it("treats an expired session the same way", async () => {
-    getReply = { status: 401, body: {} };
-    render(<ToolsSettings />);
-    expect(await screen.findByText("Nur für Administratoren.")).toBeTruthy();
-  });
-
-  it("reports any other failure with its status", async () => {
-    getReply = { status: 500, body: {} };
-    render(<ToolsSettings />);
-    expect(await screen.findByText("Fehler (HTTP 500).")).toBeTruthy();
-  });
-
-  it("leaves the loading state even when the request fails", async () => {
-    getReply = { status: 500, body: {} };
-    render(<ToolsSettings />);
-    await screen.findByText("Fehler (HTTP 500).");
-    expect(screen.queryByLabelText("Wird geladen")).toBeNull();
-  });
-
-  it("does NOT apply values carried by a non-OK response", async () => {
-    getReply = { status: 403, body: { settings: [{ key: "ads_enabled", secret: false, value: "1" }] } };
-    render(<ToolsSettings />);
-    await screen.findByText("Nur für Administratoren.");
-    expect(box("AdSense aktivieren").checked).toBe(false);
-  });
-
-  it("tolerates a response with no settings array", async () => {
-    getReply = { status: 200, body: {} };
-    await open();
-    expect(box("Publisher-ID")).toBeTruthy();
+    expect(await screen.findByText("Verbunden mit https://tools.example")).toBeTruthy();
+    expect(box("Basis-URL der Tools-Site").value).toBe("https://tools.example");
   });
 });
 
 describe("saving", () => {
-  it("writes back to the same namespace as JSON", async () => {
+  it("writes only AdSense and Stripe settings, then emits a targeted cache event", async () => {
     const u = await open();
+    await u.click(box("AdSense aktivieren"));
+    await u.type(box("Publisher-ID"), "  ca-pub-42  ");
+    await u.clear(box("Währung"));
+    await u.type(box("Währung"), " usd ");
+    await u.type(box(/Secret Key/), "  sk_test_42  ");
     await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(pathOf(put()!.url)).toBe(NS);
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    const call = fetchMock.mock.calls.find((c) => (c[1] as RequestInit)?.method === "PUT")!;
-    expect((call[1] as RequestInit).headers).toMatchObject({ "Content-Type": "application/json" });
+
+    await waitFor(() => expect(findCall(SETTINGS, "PUT")).toBeDefined());
+    const payload = findCall(SETTINGS, "PUT")!.body as {
+      settings: Array<{ key: string; secret: boolean; value: string }>;
+    };
+    expect(payload.settings.map((setting) => setting.key)).toEqual(SETTING_KEYS);
+    expect(payload.settings.find((setting) => setting.key === "adsense_publisher_id")?.value).toBe("ca-pub-42");
+    expect(payload.settings.find((setting) => setting.key === "currency")?.value).toBe("USD");
+    expect(payload.settings.filter((setting) => setting.secret).map((setting) => setting.key)).toEqual([
+      "stripe_secret_key",
+      "stripe_webhook_secret",
+    ]);
+    expect(findCall(CACHE, "POST")?.body).toEqual({ event: "settings" });
+    await waitFor(() => expect(toasts.some((toast) => toast.variant === "success")).toBe(true));
   });
 
-  it("sends the whole key set", async () => {
+  it("reports a missing cache connection without rolling back the saved settings", async () => {
+    cachePost = { status: 503, body: { cached: false, cache_status: "not_configured" } };
     const u = await open();
     await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(saved().map((s) => s.key).sort()).toEqual([...KEYS].sort());
+    await waitFor(() => expect(findCall(CACHE, "POST")).toBeDefined());
+    expect(findCall(SETTINGS, "PUT")).toBeDefined();
+    expect(toasts.some((toast) => toast.variant === "warning" && toast.message.includes("noch nicht"))).toBe(true);
   });
 
-  it("sends EMPTY tokens when neither field was touched", async () => {
-    // The store's "keep the existing secret" signal. Anything else here
-    // overwrites a working PAT and silently kills the rebuild pipeline.
-    getReply = {
-      status: 200,
-      body: { settings: [{ key: "rebuild_token", secret: true, configured: true, last4: "aa11" }] },
+  it("keeps a newly typed Stripe secret when saving fails", async () => {
+    settingsPut = { status: 500, body: {} };
+    const u = await open();
+    await u.type(box(/Secret Key/), "sk_test_keep");
+    await u.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(toasts.some((toast) => toast.variant === "danger")).toBe(true));
+    expect(box(/Secret Key/).value).toBe("sk_test_keep");
+    expect(findCall(CACHE, "POST")).toBeUndefined();
+  });
+});
+
+describe("pairing", () => {
+  it("posts the HTTPS origin and keeps the one-time token in the fallback fragment", async () => {
+    pairingPost = {
+      status: 201,
+      body: {
+        delivered: false,
+        fallback_url: "https://tools.example/install#pairing_token=once-only-secret",
+      },
     };
     const u = await open();
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(setting("rebuild_token").value).toBe("");
-    expect(setting("registry_token").value).toBe("");
+    await u.type(box("Basis-URL der Tools-Site"), "https://tools.example");
+    await u.click(screen.getByRole("button", { name: "Mit API verbinden" }));
+
+    await waitFor(() => expect(findCall(PAIRING, "POST")).toBeDefined());
+    expect(findCall(PAIRING, "POST")!.body).toEqual({
+      origin: "https://tools.example",
+      profile: "tools",
+    });
+    expect(JSON.stringify(findCall(PAIRING, "POST")!.body)).not.toContain("once-only-secret");
+    expect((await screen.findByRole("link", { name: "Einrichtungslink öffnen" })).getAttribute("href"))
+      .toBe("https://tools.example/install#pairing_token=once-only-secret");
   });
 
-  it("sends a newly typed token", async () => {
+  it("reloads and shows a directly delivered connection", async () => {
+    let reads = 0;
+    connectionGet = { status: 404, body: {} };
+    const originalFetch = fetch as unknown as ReturnType<typeof vi.fn>;
+    originalFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+      calls.push({ url: String(url), method, body });
+      const path = pathOf(String(url));
+      if (path === SETTINGS && method === "GET") return reply(settingsGet);
+      if (path === CONNECTION && method === "GET") {
+        reads += 1;
+        return reads === 1
+          ? reply({ status: 404, body: {} })
+          : reply({ status: 200, body: { connection: { origin: "https://tools.example", status: "connected" } } });
+      }
+      if (path === PAIRING && method === "POST") return reply(pairingPost);
+      return reply({ status: 500, body: {} });
+    });
+
     const u = await open();
-    await u.type(rebuildTokenBox(), "ghp_new");
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(setting("rebuild_token").value).toBe("ghp_new");
+    await u.type(box("Basis-URL der Tools-Site"), "https://tools.example");
+    await u.click(screen.getByRole("button", { name: "Mit API verbinden" }));
+    expect(await screen.findByText("Verbunden mit https://tools.example")).toBeTruthy();
+    expect(toasts.some((toast) => toast.variant === "success")).toBe(true);
   });
 
-  it("keeps the two tokens apart when only one is typed", async () => {
+  it("disconnects the active connection", async () => {
+    connectionGet = {
+      status: 200,
+      body: { connection: { origin: "https://tools.example", status: "connected" } },
+    };
     const u = await open();
-    await u.type(registryTokenBox(), "reg_new");
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(setting("registry_token").value).toBe("reg_new");
-    expect(setting("rebuild_token").value).toBe("");
-  });
-
-  it("marks EVERY credential as a secret and nothing else", async () => {
-    // A token stored with secret:false lands in the DB in plaintext.
-    const u = await open();
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    for (const s of saved()) {
-      expect(s.secret, `${s.key}`).toBe(SECRET_KEYS.includes(s.key));
-    }
-  });
-
-  it("writes the AdSense switch as the string 1 or 0", async () => {
-    const u = await open();
-    await u.click(box("AdSense aktivieren"));
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(setting("ads_enabled").value).toBe("1");
-  });
-
-  it("writes 0 when AdSense is switched back off", async () => {
-    getReply = stored({ ads_enabled: "1" });
-    const u = await open();
-    await u.click(box("AdSense aktivieren"));
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(setting("ads_enabled").value).toBe("0");
-  });
-
-  it("trims whitespace off every value", async () => {
-    // A padded repo slug dispatches to a repository that does not exist.
-    const u = await open();
-    await u.type(box("Repo (owner/name)"), "  Tracht-Digital-Solutions/tds-tools-frontend  ");
-    await u.type(box("Publisher-ID"), "  ca-pub-42  ");
-    await u.type(rebuildTokenBox(), "  ghp_padded  ");
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(setting("rebuild_repo").value).toBe("Tracht-Digital-Solutions/tds-tools-frontend");
-    expect(setting("adsense_publisher_id").value).toBe("ca-pub-42");
-    expect(setting("rebuild_token").value).toBe("ghp_padded");
-  });
-
-  it("falls back to release.yml rather than saving an empty workflow", async () => {
-    // An empty workflow name makes every rebuild dispatch 404.
-    const u = await open();
-    await u.clear(box("Workflow"));
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(setting("rebuild_workflow").value).toBe("release.yml");
-  });
-
-  it("keeps an explicitly chosen workflow", async () => {
-    const u = await open();
-    await u.clear(box("Workflow"));
-    await u.type(box("Workflow"), "release.yml");
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(put()).toBeDefined());
-    expect(setting("rebuild_workflow").value).toBe("release.yml");
-  });
-
-  it("confirms and re-reads the masked state after a save", async () => {
-    const u = await open();
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("Gespeichert"))).toBe(true));
-    await waitFor(() => expect(calls.filter((c) => c.method === "GET")).toHaveLength(2));
-  });
-
-  it("clears both typed tokens after a successful save", async () => {
-    const u = await open();
-    await u.type(rebuildTokenBox(), "ghp_new");
-    await u.type(registryTokenBox(), "reg_new");
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("Gespeichert"))).toBe(true));
-    expect(rebuildTokenBox().value).toBe("");
-    expect(registryTokenBox().value).toBe("");
-  });
-
-  it("KEEPS the typed tokens when the save fails", async () => {
-    putReply = { status: 500, body: {} };
-    const u = await open();
-    await u.type(rebuildTokenBox(), "ghp_new");
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(toasts.some((t) => t.variant === "danger" && t.message.includes("500"))).toBe(true));
-    expect(rebuildTokenBox().value).toBe("ghp_new");
-  });
-
-  it("does not re-read after a failed save", async () => {
-    putReply = { status: 403, body: {} };
-    const u = await open();
-    await u.click(screen.getByRole("button", { name: "Speichern" }));
-    await waitFor(() => expect(toasts.some((t) => t.variant === "danger" && t.message.includes("403"))).toBe(true));
-    expect(calls.filter((c) => c.method === "GET")).toHaveLength(1);
-  });
-
-  it("re-enables the save button afterwards", async () => {
-    const u = await open();
-    const button = screen.getByRole("button", { name: "Speichern" }) as HTMLButtonElement;
-    await u.click(button);
-    await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("Gespeichert"))).toBe(true));
-    expect(button.disabled).toBe(false);
+    await u.click(screen.getByRole("button", { name: "Verbindung trennen" }));
+    await waitFor(() => expect(findCall(CONNECTION, "DELETE")).toBeDefined());
+    expect(await screen.findByText("Noch nicht mit der API verbunden.")).toBeTruthy();
   });
 });

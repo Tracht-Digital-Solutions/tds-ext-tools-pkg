@@ -99,7 +99,12 @@ beforeEach(() => {
   window.addEventListener(TOAST_EVENT, collectToast);
   calls = [];
   gate = null;
-  handlers = [() => ({ status: 200, body: {} })];
+  handlers = [(_url, init) => ({
+    status: 200,
+    body: (init?.method ?? "GET") === "PUT"
+      ? { cache_status: "refreshed", cached: true }
+      : {},
+  })];
   respond(/^\/admin\/tools$/, { tools: [] });
   vi.stubGlobal(
     "fetch",
@@ -120,7 +125,6 @@ afterEach(() => {
 });
 
 const user = () => userEvent.setup({ delay: null });
-const sent = (method: string, match: RegExp) => calls.filter((c) => c.method === method && match.test(pathOf(c.url)));
 
 async function open(tools: unknown[] = [TOOL]) {
   respond(/^\/admin\/tools$/, { tools }, 200, "GET");
@@ -170,45 +174,14 @@ describe("loading", () => {
     expect(screen.queryByRole("button", { name: /anlegen|hinzufügen/i })).toBeNull();
   });
 
-  it("never claims the catalog arrives on its own", async () => {
-    // The previous copy said the tools "erscheinen automatisch, sobald die
-    // Website gebaut wurde". Nothing did that, and nothing could: the build's
-    // sync hung on TOOLS_REGISTRY_TOKEN, which no workflow exported and which
-    // Vite cannot inject without a PUBLIC_ prefix. The operator waited on an
-    // automatism that did not exist, which is exactly how this page stayed
-    // empty for the platform's whole life. The old assertion here only matched
-    // /Noch keine Tools/ and so never noticed.
+  it("explains automatic catalog sync after pairing", async () => {
     await open([]);
     await screen.findByText(/Noch keine Tools/);
     const text = document.body.textContent ?? "";
-
-    // The exact promise, not the word: the copy legitimately says the catalog
-    // is "nicht automatisch übertragen", which is the point.
-    expect(text).not.toMatch(/erscheinen\s+automatisch/i);
-    expect(text).toMatch(/nicht automatisch/i);
-  });
-
-  it("names both transfer steps, in the order the registry accepts them", async () => {
-    // POST /tools/registry answers 503 until the token is stored, so telling
-    // someone to run the wizard first sends them into an error with no cause.
-    await open([]);
-    await screen.findByText(/Noch keine Tools/);
-    const text = document.body.textContent ?? "";
-
-    expect(text).toMatch(/Registry-Sync-Token/);
-    expect(text).toMatch(/tools\.tracht-digital\.de\/install/);
-    expect(text).toMatch(/503/);
-    // Token step must be described before the wizard step.
-    // Matched on the FULL host, never the bare word: "install" appears in
-    // ordinary German panel copy far more readily than "_setup" ever did, so
-    // a substring match here would find an earlier occurrence and invert the
-    // ordering assertion without failing.
-    expect(text.indexOf("Registry-Sync-Token")).toBeLessThan(
-      text.indexOf("tools.tracht-digital.de/install"),
-    );
-
-    // And the settings page has to be reachable, not just named.
-    const link = screen.getByRole("link", { name: /Einstellungen/i });
+    expect(text).toMatch(/beim Serverstart automatisch/i);
+    expect(text).toMatch(/Site-Key/i);
+    expect(text).not.toMatch(/Registry-Sync-Token|GitHub|503/);
+    const link = screen.getByRole("link", { name: /Verbindung einrichten/i });
     expect(link.getAttribute("href")).toBe("/einstellungen");
   });
 
@@ -441,24 +414,46 @@ describe("saving a row", () => {
     expect(pathOf(puts()[0]!.url)).toBe("/admin/tools/pdf-merge");
   });
 
-  it("confirms by name and mentions the rebuild it triggered", async () => {
+  it("confirms by name and reports the refreshed cache", async () => {
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
-await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("„QR-Code-Generator“ gespeichert"))).toBe(true));
+    await waitFor(() => expect(toasts.some((t) =>
+      t.variant === "success" &&
+      t.message.includes("„QR-Code-Generator“ gespeichert") &&
+      t.message.includes("Seiten-Cache aktualisiert"),
+    )).toBe(true));
   });
 
-  it("does NOT claim a rebuild when the save failed", async () => {
+  it("reports a saved tool when the tools site is not connected yet", async () => {
+    respond(/^\/admin\/tools\//, { cache_status: "not_configured", cached: false }, 200, "PUT");
+    const u = await open();
+    await u.click(saveIn("QR-Code-Generator"));
+    await waitFor(() => expect(toasts.some((t) =>
+      t.variant === "warning" && t.message.includes("noch nicht verbunden"),
+    )).toBe(true));
+  });
+
+  it("reports a cache failure without claiming the content save failed", async () => {
+    respond(/^\/admin\/tools\//, { cache_status: "failed", cached: false }, 200, "PUT");
+    const u = await open();
+    await u.click(saveIn("QR-Code-Generator"));
+    await waitFor(() => expect(toasts.some((t) =>
+      t.variant === "warning" && t.message.includes("Cache-Aktualisierung fehlgeschlagen"),
+    )).toBe(true));
+  });
+
+  it("does not claim a cache refresh when the save failed", async () => {
     respond(/^\/admin\/tools\//, { error: "nope" }, 500, "PUT");
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
-await waitFor(() => expect(toasts.some((t) => t.variant === "danger" && t.message.includes("500"))).toBe(true));
-    expect(toasts.some((t) => t.message.includes("Rebuild ausgelöst"))).toBe(false);
+    await waitFor(() => expect(toasts.some((t) => t.variant === "danger" && t.message.includes("500"))).toBe(true));
+    expect(toasts.some((t) => t.message.includes("Seiten-Cache aktualisiert"))).toBe(false);
   });
 
   it("re-enables the row button afterwards", async () => {
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
-await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("gespeichert"))).toBe(true));
+    await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("gespeichert"))).toBe(true));
     expect((saveIn("QR-Code-Generator") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -466,44 +461,7 @@ await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.messa
     // The local patch is the source of truth; a re-read would race it.
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
-await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("gespeichert"))).toBe(true));
+    await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("gespeichert"))).toBe(true));
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(1);
-  });
-});
-
-describe("the manual rebuild", () => {
-  it("POSTs the rebuild trigger", async () => {
-    const u = await open();
-    await u.click(screen.getByRole("button", { name: "Website neu bauen" }));
-    await waitFor(() => expect(sent("POST", /^\/admin\/tools\/rebuild$/)).toHaveLength(1));
-  });
-
-  it("confirms the trigger", async () => {
-    const u = await open();
-    await u.click(screen.getByRole("button", { name: "Website neu bauen" }));
-await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("Rebuild der Website ausgelöst"))).toBe(true));
-  });
-
-  it("does NOT claim a rebuild that failed", async () => {
-    respond(/rebuild$/, { error: "no token" }, 503, "POST");
-    const u = await open();
-    await u.click(screen.getByRole("button", { name: "Website neu bauen" }));
-await waitFor(() => expect(toasts.some((t) => t.variant === "danger" && t.message.includes("503"))).toBe(true));
-    expect(toasts.some((t) => t.variant === "success")).toBe(false);
-  });
-
-  it("re-enables the button afterwards", async () => {
-    const u = await open();
-    const button = screen.getByRole("button", { name: "Website neu bauen" }) as HTMLButtonElement;
-    await u.click(button);
-await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("ausgelöst"))).toBe(true));
-    expect(button.disabled).toBe(false);
-  });
-
-  it("does not save any tool as a side effect", async () => {
-    const u = await open();
-    await u.click(screen.getByRole("button", { name: "Website neu bauen" }));
-await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("ausgelöst"))).toBe(true));
-    expect(puts()).toHaveLength(0);
   });
 });

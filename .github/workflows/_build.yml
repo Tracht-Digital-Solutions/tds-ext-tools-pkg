@@ -147,7 +147,10 @@ jobs:
           # tags — a lightweight tag never reaches the remote, so Composer (which
           # resolves this package by VCS tag) would never see the release.
           git tag -a "${new}" -m "release ${new}"
-          npm publish
+          # Explicit tag: the registry still holds 26.7.0 from the calendar-
+          # versioning detour, and npm 11 refuses to apply `latest` implicitly to
+          # a lower version ("Cannot implicitly apply the latest tag").
+          npm publish --tag latest
           git push --follow-tags origin HEAD:main
 
       - name: Dispatch site rebuild

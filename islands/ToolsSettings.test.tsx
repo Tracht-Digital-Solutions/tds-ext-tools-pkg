@@ -254,6 +254,24 @@ describe("pairing", () => {
     expect(await screen.findByText("Verbinden fehlgeschlagen (HTTP 503).")).toBeTruthy();
   });
 
+  it("says why the site did not take the pairing directly", async () => {
+    // The refusal happens on the site's host; the API relays its code.
+    pairingPost = {
+      status: 201,
+      body: {
+        delivered: false,
+        error: "HTTP 422: invalid_origin",
+        fallback_url: "https://tools.example/install#pairing_token=once-only-secret",
+      },
+    };
+    const u = await open();
+    await u.type(box("Basis-URL der Tools-Site"), "https://tools.example");
+    await u.click(screen.getByRole("button", { name: "Mit API verbinden" }));
+    expect(await screen.findByText(
+      "Die Tools-Site hat die Verbindung nicht direkt angenommen (HTTP 422: invalid_origin). Öffnen Sie den Einrichtungslink auf dem Site-Server.",
+    )).toBeTruthy();
+  });
+
   it("disconnects the active connection", async () => {
     connectionGet = {
       status: 200,

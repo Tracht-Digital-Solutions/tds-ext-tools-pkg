@@ -169,7 +169,10 @@ export default function ToolsSettings() {
         toast.success("Tools-Site mit der API verbunden.");
         await loadConnection();
       } else {
-        setConnectionStatus("Die Tools-Site war nicht direkt erreichbar. Öffnen Sie den Einrichtungslink auf dem Site-Server.");
+        // `error` is why the hand-over failed — "HTTP 422: invalid_origin" is
+        // the site's own refusal, which otherwise only its log would show.
+        const why = typeof body.error === "string" && body.error.trim() !== "" ? ` (${body.error.trim()})` : "";
+        setConnectionStatus(`Die Tools-Site hat die Verbindung nicht direkt angenommen${why}. Öffnen Sie den Einrichtungslink auf dem Site-Server.`);
       }
     } catch {
       setConnectionStatus("Verbinden fehlgeschlagen (Netzwerkfehler).");

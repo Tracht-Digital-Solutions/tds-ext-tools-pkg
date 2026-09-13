@@ -232,6 +232,28 @@ describe("pairing", () => {
     expect(toasts.some((toast) => toast.variant === "success")).toBe(true);
   });
 
+  it("shows the reason the API gives for a failed pairing", async () => {
+    // Without log access this line is the operator's only diagnosis.
+    pairingPost = {
+      status: 503,
+      body: { error: "SETTINGS_ENCRYPTION_KEY ist für sichere Site-Verbindungen erforderlich.", code: "encryption_not_configured" },
+    };
+    const u = await open();
+    await u.type(box("Basis-URL der Tools-Site"), "https://tools.example");
+    await u.click(screen.getByRole("button", { name: "Mit API verbinden" }));
+    expect(await screen.findByText(
+      "Verbinden fehlgeschlagen (HTTP 503): SETTINGS_ENCRYPTION_KEY ist für sichere Site-Verbindungen erforderlich.",
+    )).toBeTruthy();
+  });
+
+  it("falls back to the status code when the API gives no reason", async () => {
+    pairingPost = { status: 503, body: {} };
+    const u = await open();
+    await u.type(box("Basis-URL der Tools-Site"), "https://tools.example");
+    await u.click(screen.getByRole("button", { name: "Mit API verbinden" }));
+    expect(await screen.findByText("Verbinden fehlgeschlagen (HTTP 503).")).toBeTruthy();
+  });
+
   it("disconnects the active connection", async () => {
     connectionGet = {
       status: 200,

@@ -156,9 +156,12 @@ export default function ToolsSettings() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // The API names the cause (a missing SETTINGS_ENCRYPTION_KEY, a server
+        // fault) — for an operator without log access, the only diagnosis.
+        const reason = typeof body.error === "string" && body.error.trim() !== "" ? body.error.trim() : null;
         setConnectionStatus(res.status === 422
-          ? (body.error ?? "Bitte eine reine HTTPS-Adresse ohne Pfad eingeben.")
-          : `Verbinden fehlgeschlagen (HTTP ${res.status}).`);
+          ? (reason ?? "Bitte eine reine HTTPS-Adresse ohne Pfad eingeben.")
+          : `Verbinden fehlgeschlagen (HTTP ${res.status})${reason ? `: ${reason}` : "."}`);
         return;
       }
       setInstallUrl(body.fallback_url ?? body.install_url ?? null);

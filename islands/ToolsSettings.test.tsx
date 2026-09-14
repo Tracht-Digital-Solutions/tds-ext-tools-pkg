@@ -35,8 +35,12 @@ let connectionDelete: Reply;
 let toasts: Array<{ variant: string; message: string }> = [];
 
 const pathOf = (url: string) => String(url).replace(/^https?:\/\/[^/]+/i, "");
-const reply = ({ status, body }: Reply) =>
-  ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response;
+/** A request that never reaches the API: fetch itself rejects, as it does offline. */
+const UNREACHABLE: Reply = { status: 0, body: null };
+const reply = (r: Reply) => {
+  if (r === UNREACHABLE) throw new TypeError("Failed to fetch");
+  return ({ ok: r.status >= 200 && r.status < 300, status: r.status, json: async () => r.body }) as Response;
+};
 
 const collectToast = (event: Event) => {
   toasts.push((event as CustomEvent<{ variant: string; message: string }>).detail);
@@ -135,6 +139,13 @@ describe("loading", () => {
     expect(await screen.findByText("Verbunden mit https://tools.example")).toBeTruthy();
     expect(box("Basis-URL der Tools-Site").value).toBe("https://tools.example");
   });
+
+  it("says so instead of spinning forever when the API is unreachable", async () => {
+    // fetch rejects offline; unhandled, the section stayed on its spinner.
+    settingsGet = UNREACHABLE;
+    render(<ToolsSettings />);
+    expect(await screen.findByText("Einstellungen konnten nicht geladen werden — die API ist nicht erreichbar.")).toBeTruthy();
+  });
 });
 
 describe("saving", () => {
@@ -179,6 +190,25 @@ describe("saving", () => {
     await waitFor(() => expect(toasts.some((toast) => toast.variant === "danger")).toBe(true));
     expect(box(/Secret Key/).value).toBe("sk_test_keep");
     expect(findCall(CACHE, "POST")).toBeUndefined();
+  });
+
+  it("keeps a newly typed Stripe secret when the save never reaches the API", async () => {
+    settingsPut = UNREACHABLE;
+    const u = await open();
+    await u.type(box(/Secret Key/), "sk_test_keep");
+    await u.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(toasts.some((toast) => toast.variant === "danger" && toast.message.includes("nicht erreichbar"))).toBe(true));
+    expect(box(/Secret Key/).value).toBe("sk_test_keep");
+    expect(findCall(CACHE, "POST")).toBeUndefined();
+  });
+
+  it("reports a lost cache refresh without claiming the save failed", async () => {
+    cachePost = UNREACHABLE;
+    const u = await open();
+    await u.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(toasts.some((toast) => toast.variant === "warning" && toast.message.includes("nicht erreichbar"))).toBe(true));
+    expect(findCall(SETTINGS, "PUT")).toBeDefined();
+    expect(toasts.some((toast) => toast.variant === "danger")).toBe(false);
   });
 });
 
@@ -281,5 +311,17 @@ describe("pairing", () => {
     await u.click(screen.getByRole("button", { name: "Verbindung trennen" }));
     await waitFor(() => expect(findCall(CONNECTION, "DELETE")).toBeDefined());
     expect(await screen.findByText("Noch nicht mit der API verbunden.")).toBeTruthy();
+  });
+
+  it("keeps the connection when the disconnect never reaches the API", async () => {
+    connectionGet = {
+      status: 200,
+      body: { connection: { origin: "https://tools.example", status: "connected" } },
+    };
+    connectionDelete = UNREACHABLE;
+    const u = await open();
+    await u.click(await screen.findByRole("button", { name: "Verbindung trennen" }));
+    await waitFor(() => expect(toasts.some((toast) => toast.variant === "danger" && toast.message.includes("Netzwerkfehler"))).toBe(true));
+    expect(screen.getByText("Verbunden mit https://tools.example")).toBeTruthy();
   });
 });

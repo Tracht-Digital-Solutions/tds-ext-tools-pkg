@@ -57,7 +57,14 @@ export default function ToolsSettings() {
   const [stripeHookState, setStripeHookState] = useState<Masked | null>(null);
 
   const load = async () => {
-    const res = await api(NS);
+    // apiFetch rejects when the request never reaches the API; uncaught, this
+    // section stayed on its spinner for good.
+    const res = await api(NS).catch(() => null);
+    if (res === null) {
+      setStatus("Einstellungen konnten nicht geladen werden — die API ist nicht erreichbar.");
+      setLoaded(true);
+      return;
+    }
     if (!res.ok) {
       setStatus(res.status === 401 || res.status === 403 ? "Nur für Administratoren." : `Fehler (HTTP ${res.status}).`);
       setLoaded(true);
@@ -120,7 +127,13 @@ export default function ToolsSettings() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings }),
-    });
+    }).catch(() => null);
+    if (res === null) {
+      // The typed secrets stay in their fields for another attempt.
+      toast.danger("Speichern fehlgeschlagen — die API ist nicht erreichbar.");
+      setBusy(false);
+      return;
+    }
     if (res.ok) {
       setStripeKey("");
       setStripeHook("");
@@ -128,9 +141,12 @@ export default function ToolsSettings() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ event: "settings" }),
-      });
-      const cacheBody = await cacheRes.json().catch(() => ({}));
-      if (cacheRes.status === 202 && cacheBody.cached === true) {
+      }).catch(() => null);
+      const cacheBody = cacheRes === null ? {} : await cacheRes.json().catch(() => ({}));
+      if (cacheRes === null) {
+        // The settings are stored; only the follow-up refresh was lost.
+        toast.warning("Gespeichert — Cache-Aktualisierung fehlgeschlagen, die API ist nicht erreichbar.");
+      } else if (cacheRes.status === 202 && cacheBody.cached === true) {
         toast.success("Gespeichert — Seiten-Cache aktualisiert.");
       } else if (cacheRes.status === 503) {
         toast.warning("Gespeichert — die Tools-Site ist noch nicht für Cache-Aktualisierungen verbunden.");
@@ -182,7 +198,15 @@ export default function ToolsSettings() {
   };
 
   const disconnect = async () => {
-    const res = await api("/admin/tools/connection", { method: "DELETE" });
+    let res: Response;
+    try {
+      res = await api("/admin/tools/connection", { method: "DELETE" });
+    } catch {
+      // apiFetch rejects when the request never reaches the API; uncaught, the
+      // click did nothing and said nothing.
+      toast.danger("Trennen fehlgeschlagen (Netzwerkfehler).");
+      return;
+    }
     if (res.ok) {
       setConnection(null);
       setInstallUrl(null);

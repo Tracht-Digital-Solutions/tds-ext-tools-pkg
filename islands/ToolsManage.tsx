@@ -28,7 +28,14 @@ export default function ToolsManage() {
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = async () => {
-    const res = await api("/admin/tools");
+    // apiFetch rejects when the request never reaches the API; uncaught, the
+    // table stayed on its spinner for good.
+    const res = await api("/admin/tools").catch(() => null);
+    if (res === null) {
+      setError("Tools konnten nicht geladen werden — die API ist nicht erreichbar.");
+      setTools([]);
+      return;
+    }
     if (!res.ok) {
       setError(res.status === 401 || res.status === 403 ? "Nur für Administratoren." : `Fehler (HTTP ${res.status}).`);
       setTools([]);
@@ -58,8 +65,12 @@ export default function ToolsManage() {
         price_cents: tool.price_cents,
         sort_order: tool.sort_order,
       }),
-    });
+    }).catch(() => null);
     setBusy(null);
+    if (res === null) {
+      toast.danger(`„${tool.name}“ konnte nicht gespeichert werden — die API ist nicht erreichbar.`);
+      return;
+    }
     // One `status` string for a whole TABLE of rows meant saving row 3 wiped
     // row 1's confirmation, and the banner sat at the top of the table while
     // the button that produced it was somewhere down the list. Per-row

@@ -89,10 +89,18 @@ export default function ToolGuides() {
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
-    const [toolsRes, guidesRes] = await Promise.all([
+    // apiFetch rejects when a request never reaches the API; uncaught, the
+    // page stayed on its spinner for good.
+    const both = await Promise.all([
       api("/admin/tools"),
       api("/admin/tools/guides"),
-    ]);
+    ]).catch(() => null);
+    if (both === null) {
+      setError("Tools konnten nicht geladen werden — die API ist nicht erreichbar.");
+      setTools([]);
+      return;
+    }
+    const [toolsRes, guidesRes] = both;
     if (!toolsRes.ok) {
       setError(
         toolsRes.status === 401 || toolsRes.status === 403
@@ -161,8 +169,13 @@ export default function ToolGuides() {
         related: draft.related.filter((r) => r.trim() !== ""),
         privacy: draft.privacy,
       }),
-    });
+    }).catch(() => null);
     setBusy(false);
+    if (res === null) {
+      // The form keeps everything typed into it.
+      toast.danger("Speichern fehlgeschlagen — die API ist nicht erreichbar.");
+      return;
+    }
     if (res.ok) {
       const body = await res.json().catch(() => ({}));
       if (body.cache_status === "refreshed" && body.cached === true) {
@@ -184,8 +197,12 @@ export default function ToolGuides() {
     setBusy(true);
     const res = await api(`/admin/tools/guides/${encodeURIComponent(toolId)}/${lang}`, {
       method: "DELETE",
-    });
+    }).catch(() => null);
     setBusy(false);
+    if (res === null) {
+      toast.danger("Zurücksetzen fehlgeschlagen — die API ist nicht erreichbar.");
+      return;
+    }
     if (res.ok) {
       const body = await res.json().catch(() => ({}));
       if (body.cache_status === "refreshed" && body.cached === true) {

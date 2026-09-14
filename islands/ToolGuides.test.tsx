@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ToolGuides from "./ToolGuides.tsx";
+import { TOAST_EVENT } from "@tracht-digital-solutions/tds-shared/toast";
 
 const TOOLS = [
   { tool_id: "qr", name: "QR-Code-Generator", category: "web" },
@@ -163,5 +164,55 @@ describe("ToolGuides", () => {
 
     await u.type(screen.getByLabelText(/SEO-Beschreibung/), "Kurz.");
     expect(screen.getByText(/SEO-Beschreibung \(5, Ziel 80–160\)/)).toBeTruthy();
+  });
+
+  describe("when the API is unreachable", () => {
+    // fetch rejects offline; unhandled, loading stayed on its spinner and
+    // saving or resetting ended without a word.
+    let messages: string[] = [];
+    const collect = (e: Event) => messages.push((e as CustomEvent<{ message: string }>).detail.message);
+
+    /** Keep the stub's answers, except that `method` never reaches the API. */
+    const failing = (method: string) => {
+      const base = mockFetch();
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === method) throw new TypeError("Failed to fetch");
+        return base(input, init);
+      }));
+    };
+
+    beforeEach(() => {
+      messages = [];
+      window.addEventListener(TOAST_EVENT, collect);
+    });
+
+    afterEach(() => window.removeEventListener(TOAST_EVENT, collect));
+
+    it("says so instead of loading forever", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+      render(<ToolGuides />);
+      expect(await screen.findByText("Tools konnten nicht geladen werden — die API ist nicht erreichbar.")).toBeTruthy();
+    });
+
+    it("keeps the typed text when the save fails", async () => {
+      failing("PUT");
+      const u = userEvent.setup();
+      render(<ToolGuides />);
+      await u.selectOptions(await screen.findByLabelText("Tool"), "qr");
+      await u.type(screen.getByLabelText(/^Name$/), "Eigener Name");
+      await u.click(screen.getByRole("button", { name: "Speichern" }));
+      await waitFor(() => expect(messages.some((m) => m.includes("nicht erreichbar"))).toBe(true));
+      expect((screen.getByLabelText(/^Name$/) as HTMLInputElement).value).toBe("Eigener Name");
+    });
+
+    it("says so when the reset fails", async () => {
+      guides = [{ tool_id: "pdf", lang: "de", name: "X" }];
+      failing("DELETE");
+      const u = userEvent.setup();
+      render(<ToolGuides />);
+      await u.selectOptions(await screen.findByLabelText("Tool"), "pdf");
+      await u.click(await screen.findByRole("button", { name: /zurücksetzen/i }));
+      await waitFor(() => expect(messages.some((m) => m.includes("Zurücksetzen") && m.includes("nicht erreichbar"))).toBe(true));
+    });
   });
 });

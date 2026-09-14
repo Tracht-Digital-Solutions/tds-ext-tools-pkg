@@ -20,6 +20,7 @@ import { TOAST_EVENT } from "@tracht-digital-solutions/tds-shared/toast";
 interface Reply {
   status: number;
   body: unknown;
+  unreachable?: boolean;
 }
 type Handler = (url: string, init?: RequestInit) => Reply | undefined;
 
@@ -64,6 +65,15 @@ function respond(match: RegExp, body: unknown, status = 200, method?: string) {
     if (!match.test(pathOf(url))) return undefined;
     if (method && (init?.method ?? "GET") !== method) return undefined;
     return { status, body };
+  });
+}
+
+/** A request that never reaches the API: fetch itself rejects, as it does offline. */
+function unreachable(match: RegExp, method?: string) {
+  handlers.unshift((url, init) => {
+    if (!match.test(pathOf(url))) return undefined;
+    if (method && (init?.method ?? "GET") !== method) return undefined;
+    return { status: 0, body: null, unreachable: true };
   });
 }
 
@@ -114,6 +124,7 @@ beforeEach(() => {
       const g = gate;
       if (g && g.match.test(pathOf(url))) await g.promise;
       const reply = handlers.map((h) => h(url, init)).find((r) => r !== undefined)!;
+      if (reply.unreachable) throw new TypeError("Failed to fetch");
       return { ok: reply.status < 300, status: reply.status, json: async () => reply.body } as Response;
     }),
   );
@@ -221,6 +232,14 @@ describe("loading", () => {
     respond(/^\/admin\/tools$/, {}, 500, "GET");
     render(<ToolsManage />);
     await screen.findByText("Fehler (HTTP 500).");
+    expect(screen.queryByLabelText("Wird geladen")).toBeNull();
+  });
+
+  it("says so instead of spinning forever when the API is unreachable", async () => {
+    // fetch rejects offline; unhandled, the table stayed on its spinner.
+    unreachable(/^\/admin\/tools$/, "GET");
+    render(<ToolsManage />);
+    expect(await screen.findByText("Tools konnten nicht geladen werden — die API ist nicht erreichbar.")).toBeTruthy();
     expect(screen.queryByLabelText("Wird geladen")).toBeNull();
   });
 });
@@ -463,5 +482,16 @@ describe("saving a row", () => {
     await u.click(saveIn("QR-Code-Generator"));
     await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("gespeichert"))).toBe(true));
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(1);
+  });
+
+  it("names the tool and frees its row when the save never reaches the API", async () => {
+    const u = await open();
+    unreachable(/^\/admin\/tools\//, "PUT");
+    await screen.findByText("QR-Code-Generator");
+    await u.click(saveIn("QR-Code-Generator"));
+    await waitFor(() => expect(toasts.some((t) =>
+      t.variant === "danger" && t.message.includes("„QR-Code-Generator“") && t.message.includes("nicht erreichbar"),
+    )).toBe(true));
+    expect((saveIn("QR-Code-Generator") as HTMLButtonElement).disabled).toBe(false);
   });
 });

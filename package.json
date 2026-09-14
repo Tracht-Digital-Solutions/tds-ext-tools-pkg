@@ -1,6 +1,6 @@
 {
   "name": "@tracht-digital-solutions/tds-ext-tools",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Public tools platform admin for the TDS panel: tool catalog management, AdSense, premium settings, API pairing and targeted cache refreshes.",
   "license": "UNLICENSED",
   "private": false,

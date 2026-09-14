@@ -8,7 +8,8 @@ import ToolsSettings from "./ToolsSettings.tsx";
 // the reason the user navigated.
 ---
 
+{/* No heading of its own: the Einstellungen host renders this section's
+    `label` as the h2 directly above, and an h3 here repeated it verbatim. */}
 <div class="tds-settings-section__body">
-  <h3>Tools / AdSense</h3>
   <ToolsSettings client:visible />
 </div>

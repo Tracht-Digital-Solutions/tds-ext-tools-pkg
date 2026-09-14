@@ -131,16 +131,21 @@ export default function ToolsManage() {
                     <div className="text-xs opacity-60">{t.tool_id} · {t.category}</div>
                   </td>
                   <td className="text-center">
-                    <input type="checkbox" checked={t.enabled} onChange={(e) => patch(t.tool_id, { enabled: e.target.checked })} aria-label="Sichtbar" />
+                    {/* Every control names its tool: a table of eighteen
+                        identical "Sichtbar" checkboxes told a screen reader
+                        nothing about which row it was in, and the price
+                        field had no name at all. */}
+                    <input type="checkbox" checked={t.enabled} onChange={(e) => patch(t.tool_id, { enabled: e.target.checked })} aria-label={`${t.name}: sichtbar`} />
                   </td>
                   <td className="text-center">
-                    <input type="checkbox" checked={t.requires_login} onChange={(e) => patch(t.tool_id, { requires_login: e.target.checked })} aria-label="Login erforderlich" />
+                    <input type="checkbox" checked={t.requires_login} onChange={(e) => patch(t.tool_id, { requires_login: e.target.checked })} aria-label={`${t.name}: Login erforderlich`} />
                   </td>
                   <td className="text-center">
-                    <input type="checkbox" checked={t.is_premium} onChange={(e) => patch(t.tool_id, { is_premium: e.target.checked })} aria-label="Premium" />
+                    <input type="checkbox" checked={t.is_premium} onChange={(e) => patch(t.tool_id, { is_premium: e.target.checked })} aria-label={`${t.name}: Premium`} />
                   </td>
                   <td>
                     <input
+                      aria-label={`${t.name}: Preis in Euro`}
                       type="number"
                       min="0"
                       step="0.01"

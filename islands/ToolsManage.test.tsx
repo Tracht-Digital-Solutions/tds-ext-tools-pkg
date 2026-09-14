@@ -249,29 +249,29 @@ describe("the switches", () => {
     await open([PREMIUM]);
     await screen.findByText("PDF zusammenfügen");
     const r = row("PDF zusammenfügen");
-    expect((within(r).getByLabelText("Sichtbar") as HTMLInputElement).checked).toBe(true);
-    expect((within(r).getByLabelText("Login erforderlich") as HTMLInputElement).checked).toBe(true);
-    expect((within(r).getByLabelText("Premium") as HTMLInputElement).checked).toBe(true);
+    expect((within(r).getByLabelText(/: sichtbar$/) as HTMLInputElement).checked).toBe(true);
+    expect((within(r).getByLabelText(/: Login erforderlich$/) as HTMLInputElement).checked).toBe(true);
+    expect((within(r).getByLabelText(/: Premium$/) as HTMLInputElement).checked).toBe(true);
   });
 
   it("does not confuse two tools' flags", async () => {
     await open([TOOL, PREMIUM]);
     await screen.findByText("PDF zusammenfügen");
-    expect((within(row("QR-Code-Generator")).getByLabelText("Premium") as HTMLInputElement).checked).toBe(false);
-    expect((within(row("PDF zusammenfügen")).getByLabelText("Premium") as HTMLInputElement).checked).toBe(true);
+    expect((within(row("QR-Code-Generator")).getByLabelText(/: Premium$/) as HTMLInputElement).checked).toBe(false);
+    expect((within(row("PDF zusammenfügen")).getByLabelText(/: Premium$/) as HTMLInputElement).checked).toBe(true);
   });
 
   it("SAVES NOTHING when a switch is flipped", async () => {
     // The row's own Speichern is the commit point; an accidental click on the
     // Sichtbar box must not publish a tool to the public site by itself.
     const u = await open();
-    await u.click(within(row("QR-Code-Generator")).getByLabelText("Sichtbar"));
+    await u.click(within(row("QR-Code-Generator")).getByLabelText(/: sichtbar$/));
     expect(puts()).toHaveLength(0);
   });
 
   it("applies the flip locally so the row shows what will be saved", async () => {
     const u = await open();
-    const box = within(row("QR-Code-Generator")).getByLabelText("Sichtbar") as HTMLInputElement;
+    const box = within(row("QR-Code-Generator")).getByLabelText(/: sichtbar$/) as HTMLInputElement;
     await u.click(box);
     expect(box.checked).toBe(false);
   });
@@ -279,8 +279,8 @@ describe("the switches", () => {
   it("patches only the row that was touched", async () => {
     const u = await open([TOOL, PREMIUM]);
     await screen.findByText("PDF zusammenfügen");
-    await u.click(within(row("QR-Code-Generator")).getByLabelText("Sichtbar"));
-    expect((within(row("PDF zusammenfügen")).getByLabelText("Sichtbar") as HTMLInputElement).checked).toBe(true);
+    await u.click(within(row("QR-Code-Generator")).getByLabelText(/: sichtbar$/));
+    expect((within(row("PDF zusammenfügen")).getByLabelText(/: sichtbar$/) as HTMLInputElement).checked).toBe(true);
   });
 });
 
@@ -299,7 +299,7 @@ describe("the price", () => {
 
   it("unlocks it as soon as the tool is marked premium", async () => {
     const u = await open();
-    await u.click(within(row("QR-Code-Generator")).getByLabelText("Premium"));
+    await u.click(within(row("QR-Code-Generator")).getByLabelText(/: Premium$/));
     expect((within(row("QR-Code-Generator")).getByRole("spinbutton") as HTMLInputElement).disabled).toBe(false);
   });
 
@@ -419,7 +419,7 @@ describe("saving a row", () => {
 
   it("saves the edited flag, not the loaded one", async () => {
     const u = await open();
-    await u.click(within(row("QR-Code-Generator")).getByLabelText("Sichtbar"));
+    await u.click(within(row("QR-Code-Generator")).getByLabelText(/: sichtbar$/));
     await u.click(saveIn("QR-Code-Generator"));
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect((puts()[0]!.body as { enabled: boolean }).enabled).toBe(false);

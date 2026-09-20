@@ -56,6 +56,14 @@ config, the panel-editable tool guides, registry sync and both rebuild triggers
 
 ## Gotchas
 
+- **Motion kommt aus `tds-shared/motion/react` (peer `>=0.38.7`).** Der
+  Ratgeber-Editor blendet je Tool und Sprache ueber (`Presence`), der Hinweis
+  'eigener Text hinterlegt' klappt per `Collapse` auf. Die wiederholbaren
+  Zeilen (Schritte, Anwendungsfaelle, FAQ) bleiben statisch: sie sind nach
+  INDEX verschluesselt, und `AnimatePresence` liesse beim Entfernen die
+  falsche Zeile ausblenden. Tests warten nach der Tool-/Sprachwahl auf das
+  Namensfeld.
+
 - **A missing `use` statement is silent, and it took the whole guides feature
   down for the life of the release (fixed 0.3.0).** `ToolsModule.php` is in
   `namespace Tds\Ext\Tools`, and an unqualified class name resolves against

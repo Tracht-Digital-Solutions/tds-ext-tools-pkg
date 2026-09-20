@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
 import { apiFetch } from "@tracht-digital-solutions/tds-shared/api";
+import { Collapse, Presence } from "@tracht-digital-solutions/tds-shared/motion/react";
 
 const api = apiFetch;
 
@@ -250,17 +251,22 @@ export default function ToolGuides() {
         </label>
       </div>
 
+      {/* Another tool, or the same tool in the other language, is a different
+          text: cross-fade so it is visible that the form was replaced. The
+          repeatable rows below are keyed by index and stay static — with
+          AnimatePresence a removal would fade out the wrong row. */}
+      <Presence view={toolId === "" ? "none" : `${toolId}-${lang}`}>
       {toolId === "" ? (
         <div className="tds-empty">
           <p>Wählen Sie ein Tool, um seinen Text zu bearbeiten.</p>
         </div>
       ) : (
         <>
-          {hasOverride ? (
+          <Collapse open={hasOverride}>
             <p className="tds-alert" role="status">
               Für dieses Tool ist in dieser Sprache ein eigener Text hinterlegt.
             </p>
-          ) : null}
+          </Collapse>
 
           <label className="field">
             <span>Name</span>
@@ -325,6 +331,7 @@ export default function ToolGuides() {
           </div>
         </>
       )}
+      </Presence>
     </div>
   );
 }

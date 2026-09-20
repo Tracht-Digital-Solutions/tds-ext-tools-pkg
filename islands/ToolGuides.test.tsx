@@ -67,6 +67,8 @@ describe("ToolGuides", () => {
     const u = userEvent.setup();
     render(<ToolGuides />);
     await u.selectOptions(await screen.findByLabelText("Tool"), "qr");
+    // The editor cross-fades in per tool+language (tds-shared Presence).
+    await screen.findByLabelText(/^Name$/);
 
     expect((screen.getByLabelText(/^Name$/) as HTMLInputElement).value).toBe("");
     expect(screen.queryByText(/eigener Text hinterlegt/i)).toBeNull();
@@ -79,6 +81,8 @@ describe("ToolGuides", () => {
     const u = userEvent.setup();
     render(<ToolGuides />);
     await u.selectOptions(await screen.findByLabelText("Tool"), "qr");
+    // The editor cross-fades in per tool+language (tds-shared Presence).
+    await screen.findByLabelText(/^Name$/);
 
     await waitFor(() => {
       expect((screen.getByLabelText(/^Name$/) as HTMLInputElement).value).toBe("Eigener Name");
@@ -91,11 +95,14 @@ describe("ToolGuides", () => {
     const u = userEvent.setup();
     render(<ToolGuides />);
     await u.selectOptions(await screen.findByLabelText("Tool"), "qr");
+    // The editor cross-fades in per tool+language (tds-shared Presence).
+    await screen.findByLabelText(/^Name$/);
     await waitFor(() => {
       expect((screen.getByLabelText(/^Name$/) as HTMLInputElement).value).toBe("Deutscher Name");
     });
 
     await u.selectOptions(screen.getByLabelText("Sprache"), "en");
+    await screen.findByLabelText(/^Name$/);
     await waitFor(() => {
       expect((screen.getByLabelText(/^Name$/) as HTMLInputElement).value).toBe("");
     });
@@ -108,6 +115,8 @@ describe("ToolGuides", () => {
     const u = userEvent.setup();
     render(<ToolGuides />);
     await u.selectOptions(await screen.findByLabelText("Tool"), "qr");
+    // The editor cross-fades in per tool+language (tds-shared Presence).
+    await screen.findByLabelText(/^Name$/);
 
     await u.click(screen.getByRole("button", { name: "Schritt hinzufügen" }));
     await u.type(screen.getByLabelText("Titel 1"), "Datei wählen");
@@ -128,6 +137,8 @@ describe("ToolGuides", () => {
     const u = userEvent.setup();
     render(<ToolGuides />);
     await u.selectOptions(await screen.findByLabelText("Tool"), "qr");
+    // The editor cross-fades in per tool+language (tds-shared Presence).
+    await screen.findByLabelText(/^Name$/);
 
     await u.click(screen.getByRole("button", { name: "Absatz hinzufügen" }));
     await u.click(screen.getByRole("button", { name: "Speichern" }));
@@ -143,6 +154,8 @@ describe("ToolGuides", () => {
     const u = userEvent.setup();
     render(<ToolGuides />);
     await u.selectOptions(await screen.findByLabelText("Tool"), "qr");
+    // The editor cross-fades in per tool+language (tds-shared Presence).
+    await screen.findByLabelText(/^Name$/);
     expect(screen.queryByRole("button", { name: /zurücksetzen/i })).toBeNull();
   });
 
@@ -161,6 +174,8 @@ describe("ToolGuides", () => {
     const u = userEvent.setup();
     render(<ToolGuides />);
     await u.selectOptions(await screen.findByLabelText("Tool"), "qr");
+    // The editor cross-fades in per tool+language (tds-shared Presence).
+    await screen.findByLabelText(/^Name$/);
 
     await u.type(screen.getByLabelText(/SEO-Beschreibung/), "Kurz.");
     expect(screen.getByText(/SEO-Beschreibung \(5, Ziel 80–160\)/)).toBeTruthy();
@@ -199,6 +214,8 @@ describe("ToolGuides", () => {
       const u = userEvent.setup();
       render(<ToolGuides />);
       await u.selectOptions(await screen.findByLabelText("Tool"), "qr");
+    // The editor cross-fades in per tool+language (tds-shared Presence).
+    await screen.findByLabelText(/^Name$/);
       await u.type(screen.getByLabelText(/^Name$/), "Eigener Name");
       await u.click(screen.getByRole("button", { name: "Speichern" }));
       await waitFor(() => expect(messages.some((m) => m.includes("nicht erreichbar"))).toBe(true));

@@ -13,7 +13,7 @@ export default defineExtension({
   // Bumped by `scripts/sync-version.mjs` from package.json during a release —
   // do not hand-edit. Nothing used to bump it, so it drifted to 0.1.0 against a
   // package on 0.1.22, and this is the string the panel's Module page reports.
-  version: "0.4.5",
+  version: "0.4.6",
   permissions: [{ id: "tools:manage", label: "Tools verwalten", group: "tools" }],
   nav: [
     {

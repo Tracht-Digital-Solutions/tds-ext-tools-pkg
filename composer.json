@@ -3,7 +3,7 @@
   "description": "Public tools platform admin/backend for the TDS panel: catalog, guides, AdSense, premium settings, API pairing and targeted cache refreshes.",
   "type": "library",
   "license": "proprietary",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "require": {
     "php": ">=8.1",
     "slim/slim": "^4.13",

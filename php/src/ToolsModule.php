@@ -29,6 +29,7 @@ use Tds\Frontend\Contract\SiteKeyProtected;
 use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
 use Throwable;
+use Tds\Frontend\Contract\ModuleHttp;
 
 /**
  * Backend Module for the public tools platform (tds-tools).
@@ -49,6 +50,8 @@ use Throwable;
  */
 final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyProtected
 {
+    use ModuleHttp;
+
     private const NS = 'tools';
 
     public function id(): string
@@ -595,12 +598,6 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             return self::json($res, ['error' => 'Forbidden'], 403);
         }
         return null;
-    }
-
-    private static function json(Response $res, mixed $data, int $status = 200): Response
-    {
-        $res->getBody()->write(json_encode($data, JSON_THROW_ON_ERROR));
-        return $res->withStatus($status)->withHeader('Content-Type', 'application/json');
     }
 
     /**

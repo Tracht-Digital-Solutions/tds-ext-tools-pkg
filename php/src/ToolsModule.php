@@ -397,8 +397,14 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             }
             $event = json_decode($payload, true);
             $type = is_array($event) ? (string) ($event['type'] ?? '') : '';
-            if ($type === 'checkout.session.completed') {
-                $session = $event['data']['object'] ?? [];
+            // `completed` is not `paid`: a delayed method (SEPA, bank transfer)
+            // completes the session `unpaid` and confirms later with
+            // `async_payment_succeeded`. The tool used to unlock before the
+            // money arrived — and stayed unlocked if it never did.
+            $session = is_array($event) ? ($event['data']['object'] ?? []) : [];
+            $paid = $type === 'checkout.session.async_payment_succeeded'
+                || ($type === 'checkout.session.completed' && ($session['payment_status'] ?? null) === 'paid');
+            if ($paid) {
                 $userId = (int) ($session['client_reference_id'] ?? ($session['metadata']['user_id'] ?? 0));
                 $toolId = (string) ($session['metadata']['tool_id'] ?? '');
                 $sessionId = (string) ($session['id'] ?? '');

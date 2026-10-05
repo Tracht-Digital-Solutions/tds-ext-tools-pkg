@@ -270,12 +270,13 @@ export default function ToolsSettings() {
       <fieldset className="space-y-3">
         <legend className="text-sm font-semibold">Premium (Stripe)</legend>
         <p className="text-sm opacity-70">
-          Ohne Secret Key antwortet der Checkout mit 503 und kein Premium-Tool
-          lässt sich kaufen. Der Webhook (…/tools/stripe-webhook) schaltet den
+          Ohne Stripe-Konto (zentral oder hier) antwortet der Checkout mit 503
+          und kein Premium-Tool lässt sich kaufen. Der Webhook (…/tools/stripe-webhook) schaltet den
           Kauf frei — ohne sein Secret bleibt jede Zahlung ohne Freischaltung.
         </p>
+        <p className="text-sm opacity-70">Nur nötig, wenn dieses Modul ein eigenes Stripe-Konto nutzen soll. Ohne eigenen Schlüssel gilt das zentrale Konto unter Einstellungen → Zahlungen (Stripe); dort stehen auch alle Webhook-Adressen.</p>
         <label className="block">
-          <span className="text-sm">Secret Key <em className="opacity-60">({hint(stripeKeyState)})</em></span>
+          <span className="text-sm">Secret Key, optional <em className="opacity-60">({hint(stripeKeyState)})</em></span>
           <input className="field-boxed" type="password" value={stripeKey} onChange={(e) => setStripeKey(e.target.value)} placeholder="sk_… (leer = behalten)" autoComplete="off" />
         </label>
         <label className="block">

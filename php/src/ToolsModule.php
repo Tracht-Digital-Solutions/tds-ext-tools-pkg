@@ -12,8 +12,8 @@ use Tds\Ext\Tools\Domain\EntitlementRepository;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
 use Tds\Ext\Tools\Domain\ToolGuideRepository;
 use Tds\Ext\Tools\Service\StripeClient;
-use Tds\Ext\Tools\Service\StripeException;
-use Tds\Ext\Tools\Service\WebhookVerifier;
+use Tds\Frontend\Contract\Stripe\StripeException;
+use Tds\Frontend\Contract\Stripe\StripeWebhook;
 use Tds\Frontend\Contract\AbstractModule;
 use Tds\Frontend\Contract\ApiDocSource;
 use Tds\Frontend\Contract\CacheEvent;
@@ -30,6 +30,10 @@ use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
 use Throwable;
 use Tds\Frontend\Contract\ModuleHttp;
+use Tds\Frontend\Contract\Stripe\StripeWebhookDef;
+use Tds\Frontend\Contract\Stripe\StripeWebhookSource;
+use Tds\Frontend\Contract\Stripe\StripeApi;
+use Tds\Frontend\Contract\Stripe\CurlStripeApi;
 
 /**
  * Backend Module for the public tools platform (tds-tools).
@@ -48,7 +52,7 @@ use Tds\Frontend\Contract\ModuleHttp;
  * {@see SettingsStore} (ns=tools), DB-first with env fallback. A legacy registry
  * token remains accepted for this migration release but has no panel field.
  */
-final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyProtected
+final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyProtected, StripeWebhookSource
 {
     use ModuleHttp;
 
@@ -83,12 +87,24 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             // hidden from the UI; a paired connection always takes priority.
             new SettingDef('cache_url', 'Seiten-Cache: Basis-URL der Tools-Site', false, 'tools', 'https://tools.tracht-digital.de'),
             new SettingDef('cache_token', 'Seiten-Cache: Token', true, 'tools'),
-            new SettingDef('stripe_secret_key', 'Stripe Secret Key (Premium)', true, 'tools'),
+            new SettingDef('stripe_secret_key', 'Stripe Secret Key (optional — leer = zentrales Konto)', true, 'tools'),
             new SettingDef('stripe_webhook_secret', 'Stripe Webhook Secret', true, 'tools'),
             new SettingDef('currency', 'Währung (Premium)', false, 'tools', 'EUR'),
             new SettingDef('checkout_success_url', 'Checkout Success-URL', false, 'tools', 'https://tools.tracht-digital.de/'),
             new SettingDef('checkout_cancel_url', 'Checkout Cancel-URL', false, 'tools', 'https://tools.tracht-digital.de/'),
         ];
+    }
+
+    /** Listed in the admin panel under Einstellungen → Zahlungen (Stripe). */
+    public function stripeWebhooks(): array
+    {
+        return [new StripeWebhookDef(
+            'Premium-Tools',
+            '/tools/stripe-webhook',
+            ['checkout.session.completed', 'checkout.session.async_payment_succeeded'],
+            self::NS,
+            'stripe_webhook_secret',
+        )];
     }
 
     public function register(App $app): void
@@ -110,11 +126,17 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             $c->set(ToolGuideRepository::class, static fn ($c) => new ToolGuideRepository($c->get(PDO::class)));
             $c->set(EntitlementRepository::class, static fn ($c) => new EntitlementRepository($c->get(PDO::class)));
             $c->set(StripeClient::class, static function ($c): StripeClient {
-                $key = self::store($c)?->getSecret(self::NS, 'stripe_secret_key');
-                if ($key === null || $key === '') {
-                    $key = self::env('STRIPE_SECRET_KEY', '');
+                // Its own key overrides the platform account; otherwise the
+                // central one from Einstellungen → Zahlungen (Stripe), which
+                // itself falls back to STRIPE_SECRET_KEY on the host.
+                $own = (string) (self::store($c)?->getSecret(self::NS, 'stripe_secret_key') ?? '');
+                if ($own !== '') {
+                    return new StripeClient(new CurlStripeApi($own));
                 }
-                return new StripeClient($key);
+                $central = $c->has(StripeApi::class) ? $c->get(StripeApi::class) : null;
+                return new StripeClient($central instanceof StripeApi
+                    ? $central
+                    : new CurlStripeApi(self::env('STRIPE_SECRET_KEY', '')));
             });
         }
 
@@ -395,7 +417,7 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
                 return self::json($res, ['error' => 'Webhook secret not configured'], 503);
             }
             $payload = (string) $req->getBody();
-            if (!WebhookVerifier::verify($payload, $req->getHeaderLine('Stripe-Signature'), $secret)) {
+            if (!StripeWebhook::verify($payload, $req->getHeaderLine('Stripe-Signature'), $secret)) {
                 return self::json($res, ['error' => 'Invalid signature'], 400);
             }
             $event = json_decode($payload, true);

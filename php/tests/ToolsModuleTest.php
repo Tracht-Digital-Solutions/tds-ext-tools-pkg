@@ -450,9 +450,9 @@ final class ToolsModuleTest extends TestCase
         $sig = hash_hmac('sha256', $t . '.' . $payload, $secret);
         $header = "t={$t},v1={$sig}";
 
-        self::assertTrue(\Tds\Ext\Tools\Service\WebhookVerifier::verify($payload, $header, $secret));
-        self::assertFalse(\Tds\Ext\Tools\Service\WebhookVerifier::verify($payload . 'x', $header, $secret));
-        self::assertFalse(\Tds\Ext\Tools\Service\WebhookVerifier::verify($payload, $header, 'wrong'));
+        self::assertTrue(\Tds\Frontend\Contract\Stripe\StripeWebhook::verify($payload, $header, $secret));
+        self::assertFalse(\Tds\Frontend\Contract\Stripe\StripeWebhook::verify($payload . 'x', $header, $secret));
+        self::assertFalse(\Tds\Frontend\Contract\Stripe\StripeWebhook::verify($payload, $header, 'wrong'));
     }
 
     private function connectedToolsSite(): SiteConnection

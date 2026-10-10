@@ -15,6 +15,7 @@ use Tds\Ext\Tools\Service\StripeClient;
 use Tds\Frontend\Contract\Stripe\StripeException;
 use Tds\Frontend\Contract\Stripe\StripeWebhook;
 use Tds\Frontend\Contract\AbstractModule;
+use Tds\Frontend\Contract\SetupStatusSource;
 use Tds\Frontend\Contract\ApiDocSource;
 use Tds\Frontend\Contract\CacheEvent;
 use Tds\Frontend\Contract\ConnectedSiteCache;
@@ -52,8 +53,11 @@ use Tds\Frontend\Contract\Stripe\CurlStripeApi;
  * {@see SettingsStore} (ns=tools), DB-first with env fallback. A legacy registry
  * token remains accepted for this migration release but has no panel field.
  */
-final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyProtected, StripeWebhookSource
+final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyProtected, StripeWebhookSource, SetupStatusSource
 {
+    /** Kept from register() for setupItems(), which the base calls without one. */
+    private ?\Psr\Container\ContainerInterface $setupContainer = null;
+
     use ModuleHttp;
 
     private const NS = 'tools';
@@ -107,9 +111,39 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
         )];
     }
 
+    /**
+     * What the panel's setup wizard should say about this module. Uses the
+     * same check the feature itself runs, never a secret.
+     *
+     * @return list<array<string,string>>
+     */
+    public function setupItems(\Tds\Frontend\Contract\UserContext $user): array
+    {
+        $c = $this->setupContainer;
+        if ($c === null) {
+            return [];
+        }
+        $items = [];
+        try {
+            $secret = self::store($c)?->getSecret(self::NS, 'stripe_webhook_secret');
+            $items[] = [
+                'id' => 'tools:stripe-webhook',
+                'module' => 'tools',
+                'title' => 'Tools: Stripe-Webhook',
+                'description' => 'Ohne Webhook-Geheimnis meldet Stripe keine Zahlung zurück: gekaufte Premium-Tools werden nicht freigeschaltet.',
+                'state' => ($secret !== null && $secret !== '') || self::env('STRIPE_WEBHOOK_SECRET', '') !== '' ? 'ok' : 'missing',
+                'level' => 'recommended',
+                'href' => '/einstellungen#settings-stripe',
+            ];
+        } catch (\Throwable) {
+        }
+        return $items;
+    }
+
     public function register(App $app): void
     {
         $c = $app->getContainer();
+        $this->setupContainer = $c;
         // NEVER guard these with `!$c->has(X)`. PHP-DI answers `has()` from its
         // definition sources, and autowiring is one of them: for any *concrete,
         // instantiable* class the answer is always true, whether or not anyone

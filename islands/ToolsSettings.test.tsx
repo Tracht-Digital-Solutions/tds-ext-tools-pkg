@@ -4,7 +4,8 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { primeRuntimeConfig } from "@tracht-digital-solutions/tds-shared/api";
 import { TOAST_EVENT } from "@tracht-digital-solutions/tds-shared/toast";
-import ToolsSettings from "./ToolsSettings";
+import { readFileSync } from "node:fs";
+import ToolsSettings, { eurosToCents, STUDIO_FORMATS } from "./ToolsSettings";
 
 type Reply = { status: number; body: unknown };
 type Call = { url: string; method: string; body: unknown };
@@ -23,6 +24,12 @@ const SETTING_KEYS = [
   "checkout_cancel_url",
   "stripe_secret_key",
   "stripe_webhook_secret",
+  "studio_premium_formats",
+  "studio_price_cents",
+  "studio_project_limit",
+  "studio_analysis_enabled",
+  "studio_analysis_per_hour",
+  "studio_analysis_max_stylesheets",
 ];
 
 let calls: Call[] = [];
@@ -323,5 +330,66 @@ describe("pairing", () => {
     await u.click(await screen.findByRole("button", { name: "Verbindung trennen" }));
     await waitFor(() => expect(toasts.some((toast) => toast.variant === "danger" && toast.message.includes("Netzwerkfehler"))).toBe(true));
     expect(screen.getByText("Verbunden mit https://tools.example")).toBeTruthy();
+  });
+});
+
+describe("Designsystem-Studio settings", () => {
+  const payload = () =>
+    (findCall(SETTINGS, "PUT")!.body as { settings: Array<{ key: string; value: string }> }).settings.reduce<Record<string, string>>(
+      (acc, s) => ({ ...acc, [s.key]: s.value }),
+      {},
+    );
+
+  it("every visible PHP setting has a field, and no field lacks a setting", () => {
+    // Read from the module source: the island cannot import PHP. Hidden
+    // one-release fallbacks (cache_url, cache_token) are excluded on purpose.
+    const php = readFileSync(`${process.cwd()}/php/src/ToolsModule.php`, "utf8");
+    const declared = [...php.matchAll(/new SettingDef\('([a-z_]+)'/g)].map((m) => m[1]).filter((k) => k !== "cache_url" && k !== "cache_token");
+    expect([...declared].sort()).toEqual([...SETTING_KEYS].sort());
+  });
+
+  it("loads the format split and the price, and writes them back in cents", async () => {
+    settingsGet = {
+      status: 200,
+      body: {
+        settings: [
+          { key: "studio_premium_formats", secret: false, value: "zip,css" },
+          { key: "studio_price_cents", secret: false, value: "1490" },
+        ],
+      },
+    };
+    const u = await open();
+    expect((screen.getByLabelText("CSS") as HTMLSelectElement).value).toBe("premium");
+    expect((screen.getByLabelText("SCSS") as HTMLSelectElement).value).toBe("free");
+    expect(box("Premium-Preis (Euro)").value).toBe("14,90");
+
+    await u.selectOptions(screen.getByLabelText("CSS"), "free");
+    await u.selectOptions(screen.getByLabelText("Tailwind CSS"), "premium");
+    await u.clear(box("Premium-Preis (Euro)"));
+    await u.type(box("Premium-Preis (Euro)"), "19,99");
+    await u.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(findCall(SETTINGS, "PUT")).toBeDefined());
+    const p = payload();
+    expect(p.studio_premium_formats).toBe("tailwind,zip");
+    expect(p.studio_price_cents).toBe("1999");
+    expect(p.studio_analysis_enabled).toBe("1");
+  });
+
+  it("refuses an unreadable price instead of saving a wrong one", async () => {
+    const u = await open();
+    await u.clear(box("Premium-Preis (Euro)"));
+    await u.type(box("Premium-Preis (Euro)"), "neun");
+    await u.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(toasts.some((t) => t.variant === "danger")).toBe(true));
+    expect(findCall(SETTINGS, "PUT")).toBeUndefined();
+  });
+
+  it("converts euros to cents without float drift", () => {
+    expect(eurosToCents("9,90")).toBe(990);
+    expect(eurosToCents("1.005")).toBeNull();
+    expect(eurosToCents("0,1")).toBe(10);
+    expect(eurosToCents("12")).toBe(1200);
+    expect(eurosToCents("-1")).toBeNull();
+    expect(STUDIO_FORMATS.map(([f]) => f)).toEqual(["css", "variables", "html", "scss", "json", "tailwind", "bootstrap", "zip"]);
   });
 });

@@ -9,9 +9,17 @@ use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
 use Tds\Ext\Tools\Domain\EntitlementRepository;
+use Tds\Ext\Tools\Domain\StudioProjectRepository;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
 use Tds\Ext\Tools\Domain\ToolGuideRepository;
 use Tds\Ext\Tools\Service\StripeClient;
+use Tds\Ext\Tools\Studio\CurlTransport;
+use Tds\Ext\Tools\Studio\DnsHostResolver;
+use Tds\Ext\Tools\Studio\FileRateLimiter;
+use Tds\Ext\Tools\Studio\PageFetcher;
+use Tds\Ext\Tools\Studio\StudioFetchException;
+use Tds\Ext\Tools\Studio\StudioPolicy;
+use Tds\Ext\Tools\Studio\UrlGuard;
 use Tds\Frontend\Contract\Stripe\StripeException;
 use Tds\Frontend\Contract\Stripe\StripeWebhook;
 use Tds\Frontend\Contract\AbstractModule;
@@ -96,6 +104,13 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             new SettingDef('currency', 'Währung (Premium)', false, 'tools', 'EUR'),
             new SettingDef('checkout_success_url', 'Checkout Success-URL', false, 'tools', 'https://tools.tracht-digital.de/'),
             new SettingDef('checkout_cancel_url', 'Checkout Cancel-URL', false, 'tools', 'https://tools.tracht-digital.de/'),
+            // Designsystem-Studio. The tool's on/off switch is its catalog row.
+            new SettingDef('studio_premium_formats', 'Designsystem-Studio: Premium-Exportformate', false, 'tools', StudioPolicy::DEFAULT_PREMIUM),
+            new SettingDef('studio_price_cents', 'Designsystem-Studio: Premium-Preis (Cent)', false, 'tools', '900'),
+            new SettingDef('studio_project_limit', 'Designsystem-Studio: Projekte pro Nutzer', false, 'tools', '50'),
+            new SettingDef('studio_analysis_enabled', 'Designsystem-Studio: Website-Analyse aktiv (1/0)', false, 'tools', '1'),
+            new SettingDef('studio_analysis_per_hour', 'Designsystem-Studio: Analysen pro Stunde und Adresse', false, 'tools', '20'),
+            new SettingDef('studio_analysis_max_stylesheets', 'Designsystem-Studio: Stylesheets pro Analyse', false, 'tools', '12'),
         ];
     }
 
@@ -159,6 +174,13 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             $c->set(ToolConfigRepository::class, static fn ($c) => new ToolConfigRepository($c->get(PDO::class)));
             $c->set(ToolGuideRepository::class, static fn ($c) => new ToolGuideRepository($c->get(PDO::class)));
             $c->set(EntitlementRepository::class, static fn ($c) => new EntitlementRepository($c->get(PDO::class)));
+            $c->set(StudioProjectRepository::class, static fn ($c) => new StudioProjectRepository($c->get(PDO::class)));
+            $c->set(PageFetcher::class, static fn ($c) => new PageFetcher(
+                new DnsHostResolver(),
+                new CurlTransport(),
+                max(1, min(30, (int) self::setting($c, 'studio_analysis_max_stylesheets', 'TOOLS_STUDIO_MAX_STYLESHEETS', '12'))),
+            ));
+            $c->set(FileRateLimiter::class, static fn () => new FileRateLimiter(sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'tds-tools-studio-rate'));
             $c->set(StripeClient::class, static function ($c): StripeClient {
                 // Its own key overrides the platform account; otherwise the
                 // central one from Einstellungen → Zahlungen (Stripe), which
@@ -415,6 +437,14 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             $body = (array) $req->getParsedBody();
             $toolId = (string) ($body['tool'] ?? '');
             $tool = $toolId === '' ? null : $c->get(ToolConfigRepository::class)->find($toolId);
+            if ($toolId === StudioPolicy::TOOL_ID && ($tool === null || !$tool['is_premium'])) {
+                // The studio itself is free; its Premium (saving, premium
+                // exports) is a feature unlock sold under the same tool id.
+                if ($tool !== null && !$tool['enabled']) {
+                    return self::json($res, ['error' => 'Das Tool ist deaktiviert.'], 403);
+                }
+                $tool = ['name' => 'Designsystem-Studio Premium', 'is_premium' => true, 'price_cents' => self::studioPrice($c)];
+            }
             if ($tool === null || !$tool['is_premium'] || $tool['price_cents'] <= 0) {
                 return self::json($res, ['error' => 'Kein kostenpflichtiges Tool.'], 400);
             }
@@ -439,6 +469,107 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
                 return self::json($res, ['error' => $e->getMessage()], 502);
             }
             return self::json($res, ['url' => $session['url']], 201);
+        });
+
+        // --- Designsystem-Studio ------------------------------------------------
+        //
+        // The studio runs in the visitor's browser; these routes are what must
+        // NOT run there: who may save, which formats are premium, and the one
+        // network fetch an analysis needs. Like /tools/entitlement they are
+        // called by visitors and never by the site with its key.
+        $app->get('/tools/studio/access', function (Request $req, Response $res) use ($c): Response {
+            return self::json($res, self::studioAccess($c));
+        });
+
+        $app->get('/tools/studio/projects', function (Request $req, Response $res) use ($c): Response {
+            if (($deny = self::requireStudioPremium($c, $res)) !== null) {
+                return $deny;
+            }
+            $uid = (int) $c->get(UserContext::class)->userId();
+            return self::json($res, ['projects' => $c->get(StudioProjectRepository::class)->listFor($uid)]);
+        });
+
+        $app->post('/tools/studio/projects', function (Request $req, Response $res) use ($c): Response {
+            if (($deny = self::requireStudioPremium($c, $res)) !== null) {
+                return $deny;
+            }
+            $uid = (int) $c->get(UserContext::class)->userId();
+            $input = self::studioPayload((array) $req->getParsedBody());
+            if (is_string($input)) {
+                return self::json($res, ['error' => $input, 'code' => 'invalid_project'], 422);
+            }
+            $repo = $c->get(StudioProjectRepository::class);
+            $limit = self::studioProjectLimit($c);
+            if ($repo->countFor($uid) >= $limit) {
+                return self::json($res, ['error' => "Höchstens {$limit} Projekte — bitte ein altes löschen.", 'code' => 'limit'], 409);
+            }
+            $id = $repo->create($uid, $input['name'], $input['schema'], $input['json']);
+            return self::json($res, ['project' => $repo->summary($uid, $id)], 201);
+        });
+
+        $app->get('/tools/studio/projects/{id:[0-9]+}', function (Request $req, Response $res, array $args) use ($c): Response {
+            if (($deny = self::requireStudioPremium($c, $res)) !== null) {
+                return $deny;
+            }
+            $uid = (int) $c->get(UserContext::class)->userId();
+            $project = $c->get(StudioProjectRepository::class)->find($uid, (int) $args['id']);
+            return $project === null
+                ? self::json($res, ['error' => 'Projekt nicht gefunden.'], 404)
+                : self::json($res, ['project' => $project]);
+        });
+
+        $app->put('/tools/studio/projects/{id:[0-9]+}', function (Request $req, Response $res, array $args) use ($c): Response {
+            if (($deny = self::requireStudioPremium($c, $res)) !== null) {
+                return $deny;
+            }
+            $uid = (int) $c->get(UserContext::class)->userId();
+            $input = self::studioPayload((array) $req->getParsedBody());
+            if (is_string($input)) {
+                return self::json($res, ['error' => $input, 'code' => 'invalid_project'], 422);
+            }
+            $repo = $c->get(StudioProjectRepository::class);
+            if (!$repo->update($uid, (int) $args['id'], $input['name'], $input['schema'], $input['json'])) {
+                return self::json($res, ['error' => 'Projekt nicht gefunden.'], 404);
+            }
+            return self::json($res, ['project' => $repo->summary($uid, (int) $args['id'])]);
+        });
+
+        $app->delete('/tools/studio/projects/{id:[0-9]+}', function (Request $req, Response $res, array $args) use ($c): Response {
+            if (($deny = self::requireStudioPremium($c, $res)) !== null) {
+                return $deny;
+            }
+            $uid = (int) $c->get(UserContext::class)->userId();
+            $ok = $c->get(StudioProjectRepository::class)->delete($uid, (int) $args['id']);
+            return $ok ? self::json($res, ['ok' => true]) : self::json($res, ['error' => 'Projekt nicht gefunden.'], 404);
+        });
+
+        $app->post('/tools/studio/analyze', function (Request $req, Response $res) use ($c): Response {
+            if (!self::studioEnabled($c)) {
+                return self::json($res, ['error' => 'Das Designsystem-Studio ist deaktiviert.', 'code' => 'disabled'], 403);
+            }
+            if (self::setting($c, 'studio_analysis_enabled', 'TOOLS_STUDIO_ANALYSIS', '1') !== '1') {
+                return self::json($res, ['error' => 'Die Website-Analyse ist abgeschaltet.', 'code' => 'disabled'], 403);
+            }
+            $url = trim((string) (((array) $req->getParsedBody())['url'] ?? ''));
+            try {
+                // Validate first: a refused address costs no rate-limit slot
+                // and never touches DNS.
+                UrlGuard::parse($url);
+                $perHour = max(1, (int) self::setting($c, 'studio_analysis_per_hour', 'TOOLS_STUDIO_ANALYSIS_PER_HOUR', '20'));
+                if (!$c->get(FileRateLimiter::class)->allow('studio-analyze|' . self::clientIp($req), $perHour, 3600)) {
+                    throw new StudioFetchException('rate_limited', 'Zu viele Analysen in kurzer Zeit.');
+                }
+                return self::json($res, $c->get(PageFetcher::class)->fetch($url));
+            } catch (StudioFetchException $e) {
+                return self::json($res, array_filter([
+                    'error' => $e->getMessage(),
+                    'code' => $e->errorCode,
+                    'location' => $e->location,
+                ], static fn ($v) => $v !== null), $e->httpStatus());
+            } catch (Throwable $e) {
+                error_log('[tools] studio analysis failed: ' . $e->getMessage());
+                return self::json($res, ['error' => 'Die Seite konnte nicht analysiert werden.', 'code' => 'fetch_failed'], 502);
+            }
         });
 
         // --- Premium: Stripe webhook (unauthenticated; signature-verified) ----
@@ -476,6 +607,129 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
     }
 
     // --- helpers ---------------------------------------------------------------
+
+    /**
+     * Everything the studio (and the site's export endpoint, forwarding the
+     * visitor's cookie) needs to know about one visitor. Never fails: a
+     * database hiccup answers "not entitled", which keeps premium closed.
+     *
+     * @return array<string,mixed>
+     */
+    private static function studioAccess(ContainerInterface $c): array
+    {
+        $user = $c->get(UserContext::class);
+        $authenticated = $user->isAuthenticated() && $user->userId() !== null;
+        $entitled = false;
+        if ($authenticated) {
+            try {
+                $entitled = $user->isAdmin() || $c->get(EntitlementRepository::class)->isEntitled((int) $user->userId(), StudioPolicy::TOOL_ID);
+            } catch (Throwable) {
+                $entitled = false;
+            }
+        }
+        return [
+            'enabled' => self::studioEnabled($c),
+            'authenticated' => $authenticated,
+            'entitled' => $entitled,
+            'formats' => StudioPolicy::formats(self::setting($c, 'studio_premium_formats', 'TOOLS_STUDIO_PREMIUM_FORMATS', StudioPolicy::DEFAULT_PREMIUM)),
+            'priceCents' => self::studioPrice($c),
+            'currency' => self::setting($c, 'currency', 'TOOLS_CURRENCY', 'EUR'),
+            'analysisEnabled' => self::setting($c, 'studio_analysis_enabled', 'TOOLS_STUDIO_ANALYSIS', '1') === '1',
+            'projectLimit' => self::studioProjectLimit($c),
+        ];
+    }
+
+    /** The catalog switch. No row yet (registry not synced) counts as on. */
+    private static function studioEnabled(ContainerInterface $c): bool
+    {
+        try {
+            $row = $c->get(ToolConfigRepository::class)->find(StudioPolicy::TOOL_ID);
+        } catch (Throwable) {
+            return true;
+        }
+        return $row === null || (bool) $row['enabled'];
+    }
+
+    /** Price of the studio's Premium: the catalog price if the admin made the whole tool premium, else its own setting. */
+    private static function studioPrice(ContainerInterface $c): int
+    {
+        try {
+            $row = $c->get(ToolConfigRepository::class)->find(StudioPolicy::TOOL_ID);
+            if ($row !== null && $row['is_premium'] && (int) $row['price_cents'] > 0) {
+                return (int) $row['price_cents'];
+            }
+        } catch (Throwable) {
+        }
+        return max(0, (int) self::setting($c, 'studio_price_cents', 'TOOLS_STUDIO_PRICE_CENTS', '900'));
+    }
+
+    private static function studioProjectLimit(ContainerInterface $c): int
+    {
+        return max(1, (int) self::setting($c, 'studio_project_limit', 'TOOLS_STUDIO_PROJECT_LIMIT', '50'));
+    }
+
+    /** 401 without a session, 403 without the entitlement or with the tool switched off. */
+    private static function requireStudioPremium(ContainerInterface $c, Response $res): ?Response
+    {
+        $user = $c->get(UserContext::class);
+        if (!$user->isAuthenticated() || $user->userId() === null) {
+            return self::json($res, ['error' => 'Bitte anmelden.', 'code' => 'login_required'], 401);
+        }
+        if (!self::studioEnabled($c)) {
+            return self::json($res, ['error' => 'Das Designsystem-Studio ist deaktiviert.', 'code' => 'disabled'], 403);
+        }
+        if (!$user->isAdmin() && !$c->get(EntitlementRepository::class)->isEntitled((int) $user->userId(), StudioPolicy::TOOL_ID)) {
+            return self::json($res, ['error' => 'Speichern ist Premium-Nutzern vorbehalten.', 'code' => 'premium_required'], 403);
+        }
+        return null;
+    }
+
+    /**
+     * Validates a project save. The server checks the envelope (an object with
+     * a known schema version, a name, a size cap) and stores the rest as-is.
+     *
+     * @return array{name:string,schema:int,json:string}|string the input, or an error message
+     */
+    private static function studioPayload(array $body): array|string
+    {
+        $data = $body['data'] ?? null;
+        if (!is_array($data) || ($data !== [] && array_is_list($data))) {
+            return 'Kein gültiges Projekt.';
+        }
+        $schema = $data['schema'] ?? null;
+        if (!is_int($schema) || $schema < 1 || $schema > 100) {
+            return 'Unbekannte Projektversion.';
+        }
+        $name = trim((string) ($body['name'] ?? ($data['name'] ?? '')));
+        $name = preg_replace('/[\x00-\x1f\x7f]/u', '', $name) ?? '';
+        if ($name === '') {
+            return 'Bitte einen Projektnamen angeben.';
+        }
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json) || strlen($json) > 512_000) {
+            return 'Das Projekt ist zu groß (höchstens 512 KB).';
+        }
+        return ['name' => mb_substr($name, 0, 120), 'schema' => $schema, 'json' => $json];
+    }
+
+    /**
+     * The visitor's address for rate limiting. Behind the gateway REMOTE_ADDR
+     * is the proxy; the gateway appends the address it saw to X-Forwarded-For,
+     * so the right-most entry is the one no client can forge.
+     */
+    private static function clientIp(Request $req): string
+    {
+        $remote = (string) ($req->getServerParams()['REMOTE_ADDR'] ?? '');
+        $forwarded = array_values(array_filter(array_map('trim', explode(',', $req->getHeaderLine('X-Forwarded-For')))));
+        $internal = $remote === '' || filter_var($remote, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
+        if ($internal && $forwarded !== []) {
+            $last = end($forwarded);
+            if (filter_var($last, FILTER_VALIDATE_IP) !== false) {
+                return $last;
+            }
+        }
+        return $remote !== '' ? $remote : 'unknown';
+    }
 
     /** @return array{enabled:bool,publisherId:string,slotCatalog:string,slotTool:string} */
     private static function adsConfig(ContainerInterface $c): array

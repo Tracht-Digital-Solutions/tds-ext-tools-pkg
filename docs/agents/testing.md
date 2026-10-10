@@ -30,13 +30,15 @@ version while every product build composes the current one. Keep these in mind:
 | Suite | Sharpest assertions |
 |---|---|
 | `islands/ToolsManage.test.tsx` | `enabled`; euros → cents with clamp and rounding at the edges; nothing saved before "Speichern"; PUT doesn't echo pack-owned fields; rows independently saveable; empty-state wording |
-| `islands/ToolsSettings.test.tsx` | Posted keys equal `KEYS` both ways; secrets masked, blank keeps, kept apart; AdSense off by default |
+| `islands/ToolsSettings.test.tsx` | Posted keys equal `KEYS` both ways and equal the PHP `SettingDef`s; secrets masked, blank keeps, kept apart; AdSense off by default; studio format split and euro → cent price |
 | `islands/ToolGuides.test.tsx` | Guide editor per tool and language |
 | `islands/WidgetBody.test.tsx` | `—` on failure, never `0 / 0` |
 | `src/index.test.ts` + `tests/packaging.test.ts` | Manifest (one permission `tools:manage`); specifiers ship |
 | `php/tests/ToolsModuleTest.php` | RBAC, registry credentials, site id from the key in both directions |
 | `php/tests/ClassReferencesTest.php` | Every class reference in `php/src` resolves |
 | `php/tests/ToolsApiDocsTest.php` | API-doc parity |
+| `php/tests/StudioFetchTest.php` | SSRF guard (schemes, ports, internal names, private/reserved/mapped IPs), any private DNS answer blocks, pinned IPs, no link ever requested, page redirect reported not followed, re-checked stylesheet redirects, `text/css` only, limits, rate limiter |
+| `php/tests/StudioRoutesTest.php` | Studio routes on in-memory SQLite: guests get access info but no storage, entitlement gates saving, projects never cross users, admin switches act without code, analysis refuses before network, checkout sells the free studio's Premium |
 
 DB tests skip without `TDS_TEST_DB_DSN` and run against real MariaDB/MySQL (they drop and
 recreate `tools_config`). The API-doc parity test compares only method and pattern, so it

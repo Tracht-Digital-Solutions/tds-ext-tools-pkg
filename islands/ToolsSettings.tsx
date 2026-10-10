@@ -21,6 +21,30 @@ const api = apiFetch;
 const NS = "/admin/settings/tools";
 
 /**
+ * Designsystem-Studio export formats, in the order the studio lists them. Must
+ * match `StudioPolicy::FORMATS` (PHP) and `EXPORT_FORMATS` (tds-tool-devkit).
+ */
+export const STUDIO_FORMATS: Array<[string, string]> = [
+  ["css", "CSS"],
+  ["variables", "CSS Custom Properties"],
+  ["html", "HTML-Beispiele"],
+  ["scss", "SCSS"],
+  ["json", "JSON Design Tokens"],
+  ["tailwind", "Tailwind CSS"],
+  ["bootstrap", "Bootstrap 5.3"],
+  ["zip", "Komplettpaket (ZIP)"],
+];
+const STUDIO_DEFAULT_PREMIUM = "scss,tailwind,bootstrap,zip";
+
+/** Euros as typed ("9,90") → whole cents; null for anything that is not a price. */
+export function eurosToCents(input: string): number | null {
+  const v = input.trim().replace(/\s/g, "").replace(",", ".");
+  if (!/^\d+(\.\d{1,2})?$/.test(v)) return null;
+  const [whole, frac = ""] = v.split(".");
+  return Number(whole) * 100 + Number(frac.padEnd(2, "0"));
+}
+
+/**
  * Tools settings — one-click API connection, AdSense and the Stripe premium
  * layer. Runtime credentials for the public site are managed by pairing, never
  * by GitHub or editable token fields. Stripe secrets stay in the core settings
@@ -56,6 +80,13 @@ export default function ToolsSettings() {
   const [stripeHook, setStripeHook] = useState("");
   const [stripeHookState, setStripeHookState] = useState<Masked | null>(null);
 
+  const [studioPremium, setStudioPremium] = useState<Set<string>>(new Set(STUDIO_DEFAULT_PREMIUM.split(",")));
+  const [studioPrice, setStudioPrice] = useState("9,00");
+  const [studioLimit, setStudioLimit] = useState("50");
+  const [studioAnalysis, setStudioAnalysis] = useState(true);
+  const [studioPerHour, setStudioPerHour] = useState("20");
+  const [studioSheets, setStudioSheets] = useState("12");
+
   const load = async () => {
     // apiFetch rejects when the request never reaches the API; uncaught, this
     // section stayed on its spinner for good.
@@ -81,6 +112,14 @@ export default function ToolsSettings() {
     setCancelUrl(map.get("checkout_cancel_url")?.value || "");
     setStripeKeyState(map.get("stripe_secret_key") ?? null);
     setStripeHookState(map.get("stripe_webhook_secret") ?? null);
+    const premium = map.get("studio_premium_formats")?.value ?? STUDIO_DEFAULT_PREMIUM;
+    setStudioPremium(new Set(premium.split(",").map((f) => f.trim()).filter(Boolean)));
+    const cents = Number(map.get("studio_price_cents")?.value || "900");
+    setStudioPrice((Number.isFinite(cents) ? cents / 100 : 9).toFixed(2).replace(".", ","));
+    setStudioLimit(map.get("studio_project_limit")?.value || "50");
+    setStudioAnalysis((map.get("studio_analysis_enabled")?.value || "1") === "1");
+    setStudioPerHour(map.get("studio_analysis_per_hour")?.value || "20");
+    setStudioSheets(map.get("studio_analysis_max_stylesheets")?.value || "12");
     setLoaded(true);
   };
 
@@ -110,6 +149,15 @@ export default function ToolsSettings() {
   }, []);
 
   const save = async () => {
+    const cents = eurosToCents(studioPrice);
+    if (cents === null) {
+      toast.danger("Bitte einen gültigen Preis für das Designsystem-Studio eingeben (z. B. 9,00).");
+      return;
+    }
+    const whole = (v: string, min: number, max: number, fallback: number) => {
+      const n = Math.round(Number(v));
+      return String(Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback);
+    };
     setBusy(true);
     setStatus(null);
     const settings: Masked[] = [
@@ -122,6 +170,12 @@ export default function ToolsSettings() {
       { key: "checkout_cancel_url", secret: false, value: cancelUrl.trim() },
       { key: "stripe_secret_key", secret: true, value: stripeKey.trim() },
       { key: "stripe_webhook_secret", secret: true, value: stripeHook.trim() },
+      { key: "studio_premium_formats", secret: false, value: STUDIO_FORMATS.map(([f]) => f).filter((f) => studioPremium.has(f)).join(",") },
+      { key: "studio_price_cents", secret: false, value: String(cents) },
+      { key: "studio_project_limit", secret: false, value: whole(studioLimit, 1, 1000, 50) },
+      { key: "studio_analysis_enabled", secret: false, value: studioAnalysis ? "1" : "0" },
+      { key: "studio_analysis_per_hour", secret: false, value: whole(studioPerHour, 1, 1000, 20) },
+      { key: "studio_analysis_max_stylesheets", secret: false, value: whole(studioSheets, 1, 30, 12) },
     ];
     const res = await api(NS, {
       method: "PUT",
@@ -297,6 +351,60 @@ export default function ToolsSettings() {
           <span className="text-sm">Cancel-URL</span>
           <input className="field-boxed" type="url" value={cancelUrl} onChange={(e) => setCancelUrl(e.target.value)} placeholder="https://tools.tracht-digital.de/" />
         </label>
+      </fieldset>
+
+      <fieldset className="space-y-3">
+        <legend className="text-sm font-semibold">Designsystem-Studio</legend>
+        <p className="text-sm opacity-70">
+          Das Studio selbst ist kostenlos. Premium (einmaliger Kauf, Freischaltung
+          „design-system-studio“) schaltet das Speichern von Projekten und die
+          unten als Premium markierten Exportformate frei. Ein- und ausgeschaltet
+          wird das Tool in der Tool-Verwaltung.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {STUDIO_FORMATS.map(([format, label]) => (
+            <label key={format} className="block">
+              <span className="text-sm">{label}</span>
+              <select
+                className="field-boxed"
+                value={studioPremium.has(format) ? "premium" : "free"}
+                onChange={(e) => {
+                  const next = new Set(studioPremium);
+                  if (e.target.value === "premium") next.add(format);
+                  else next.delete(format);
+                  setStudioPremium(next);
+                }}
+              >
+                <option value="free">Kostenlos</option>
+                <option value="premium">Premium</option>
+              </select>
+            </label>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="block">
+            <span className="text-sm">Premium-Preis (Euro)</span>
+            <input className="field-boxed" type="text" inputMode="decimal" value={studioPrice} onChange={(e) => setStudioPrice(e.target.value)} placeholder="9,00" />
+          </label>
+          <label className="block">
+            <span className="text-sm">Gespeicherte Projekte pro Nutzer</span>
+            <input className="field-boxed" type="number" min={1} max={1000} value={studioLimit} onChange={(e) => setStudioLimit(e.target.value)} />
+          </label>
+        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={studioAnalysis} onChange={(e) => setStudioAnalysis(e.target.checked)} />
+          Website-Analyse per HTTPS erlauben
+        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="block">
+            <span className="text-sm">Analysen pro Stunde und Besucher-Adresse</span>
+            <input className="field-boxed" type="number" min={1} max={1000} value={studioPerHour} onChange={(e) => setStudioPerHour(e.target.value)} />
+          </label>
+          <label className="block">
+            <span className="text-sm">Stylesheets pro Analyse (höchstens 30)</span>
+            <input className="field-boxed" type="number" min={1} max={30} value={studioSheets} onChange={(e) => setStudioSheets(e.target.value)} />
+          </label>
+        </div>
       </fieldset>
 
       {/* The load failure is persistent state and stays in-flow; the save

@@ -274,7 +274,7 @@ return [
             . 'kann. Ein Stripe-Fehler wird als 502 durchgereicht.',
         'auth' => 'session',
         'params' => [
-            ['in' => 'body', 'name' => 'tool', 'type' => 'string', 'required' => true, 'description' => 'Tool-Id. Muss Premium sein und einen Preis > 0 haben.'],
+            ['in' => 'body', 'name' => 'tool', 'type' => 'string', 'required' => true, 'description' => 'Tool-Id. Muss Premium sein und einen Preis > 0 haben — Ausnahme `design-system-studio`: das Studio ist frei, sein Premium kostet den Preis aus Einstellungen → Tools.'],
         ],
         'responses' => [
             ['status' => 201, 'description' => '`{url}` — die Checkout-Seite von Stripe.'],
@@ -302,6 +302,126 @@ return [
             ['status' => 200, 'description' => '`{received: true}` — auch für nicht behandelte Ereignistypen.'],
             ['status' => 400, 'description' => 'Signatur ungültig.'],
             ['status' => 503, 'description' => 'Kein Webhook-Secret konfiguriert.'],
+        ],
+    ],
+    [
+        'method' => 'GET',
+        'pattern' => '/tools/studio/access',
+        'tag' => 'Designsystem-Studio',
+        'summary' => 'Was der Besucher im Designsystem-Studio darf',
+        'description' => 'Liefert, ob das Studio aktiv ist, ob der Besucher angemeldet ist und Premium '
+            . 'besitzt, welche Exportformate kostenlos oder Premium sind (Einstellungen → Tools), '
+            . 'den Premium-Preis und die Projektgrenze. Gäste bekommen eine Antwort, keinen Fehler. '
+            . 'Der Export-Endpunkt der Tools-Site fragt hier mit dem Cookie des Besuchers nach, '
+            . 'bevor er ein Premium-Format erzeugt.',
+        'auth' => 'public',
+        'responses' => [
+            ['status' => 200, 'description' => '`{enabled, authenticated, entitled, formats: {css: "free"|"premium", …}, priceCents, currency, analysisEnabled, projectLimit}`'],
+        ],
+    ],
+    [
+        'method' => 'GET',
+        'pattern' => '/tools/studio/projects',
+        'tag' => 'Designsystem-Studio',
+        'summary' => 'Gespeicherte Studio-Projekte des Nutzers auflisten',
+        'description' => 'Nur mit Premium (Freischaltung `design-system-studio`) oder als Admin. '
+            . 'Jede Abfrage ist auf den eigenen Nutzer beschränkt.',
+        'auth' => 'session',
+        'responses' => [
+            ['status' => 200, 'description' => '`{projects: [{id, name, updated_at}]}`'],
+            ['status' => 401, 'description' => 'Nicht angemeldet.'],
+            ['status' => 403, 'description' => '`code: premium_required` oder `disabled`.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/tools/studio/projects',
+        'tag' => 'Designsystem-Studio',
+        'summary' => 'Ein Studio-Projekt speichern',
+        'description' => 'Der Server prüft nur die Hülle (Objekt mit bekannter `schema`-Version, Name, '
+            . 'höchstens 512 KB) und speichert das Projekt unverändert.',
+        'auth' => 'session',
+        'params' => [
+            ['in' => 'body', 'name' => 'name', 'type' => 'string', 'required' => true, 'description' => 'Projektname, höchstens 120 Zeichen.'],
+            ['in' => 'body', 'name' => 'data', 'type' => 'object', 'required' => true, 'description' => 'Das versionierte Studio-Projekt.'],
+        ],
+        'responses' => [
+            ['status' => 201, 'description' => '`{project: {id, name, updated_at}}`'],
+            ['status' => 401, 'description' => 'Nicht angemeldet.'],
+            ['status' => 403, 'description' => '`code: premium_required` oder `disabled`.'],
+            ['status' => 409, 'description' => 'Projektgrenze erreicht (`code: limit`).'],
+            ['status' => 422, 'description' => 'Ungültiges Projekt (`code: invalid_project`).'],
+        ],
+    ],
+    [
+        'method' => 'GET',
+        'pattern' => '/tools/studio/projects/{id:[0-9]+}',
+        'tag' => 'Designsystem-Studio',
+        'summary' => 'Ein eigenes Studio-Projekt laden',
+        'auth' => 'session',
+        'params' => [
+            ['in' => 'path', 'name' => 'id', 'type' => 'integer', 'required' => true, 'description' => 'Projekt-Id.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{project: {id, name, data, updated_at}}`'],
+            ['status' => 404, 'description' => 'Nicht vorhanden oder nicht das eigene Projekt.'],
+        ],
+    ],
+    [
+        'method' => 'PUT',
+        'pattern' => '/tools/studio/projects/{id:[0-9]+}',
+        'tag' => 'Designsystem-Studio',
+        'summary' => 'Ein eigenes Studio-Projekt überschreiben',
+        'auth' => 'session',
+        'params' => [
+            ['in' => 'path', 'name' => 'id', 'type' => 'integer', 'required' => true, 'description' => 'Projekt-Id.'],
+            ['in' => 'body', 'name' => 'name', 'type' => 'string', 'required' => true, 'description' => 'Projektname.'],
+            ['in' => 'body', 'name' => 'data', 'type' => 'object', 'required' => true, 'description' => 'Das versionierte Studio-Projekt.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{project: {id, name, updated_at}}`'],
+            ['status' => 404, 'description' => 'Nicht vorhanden oder nicht das eigene Projekt.'],
+            ['status' => 422, 'description' => 'Ungültiges Projekt.'],
+        ],
+    ],
+    [
+        'method' => 'DELETE',
+        'pattern' => '/tools/studio/projects/{id:[0-9]+}',
+        'tag' => 'Designsystem-Studio',
+        'summary' => 'Ein eigenes Studio-Projekt löschen',
+        'auth' => 'session',
+        'params' => [
+            ['in' => 'path', 'name' => 'id', 'type' => 'integer', 'required' => true, 'description' => 'Projekt-Id.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true}`'],
+            ['status' => 404, 'description' => 'Nicht vorhanden oder nicht das eigene Projekt.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/tools/studio/analyze',
+        'tag' => 'Designsystem-Studio',
+        'summary' => 'Genau eine HTTPS-Seite samt Stylesheets für die Stilanalyse laden',
+        'description' => 'Lädt ausschließlich die angegebene Seite und die von ihr verlinkten HTTPS-'
+            . 'Stylesheets (eine @import-Ebene) — kein Crawling, keine weiteren HTML-Seiten, kein '
+            . 'JavaScript. Jede Adresse wird geprüft: nur Port 443, keine internen oder reservierten '
+            . 'Netze; jede DNS-Antwort muss öffentlich sein, die Verbindung wird auf die geprüfte '
+            . 'Adresse festgelegt (DNS-Rebinding). Leitet die Seite weiter, wird das Ziel gemeldet, '
+            . 'nicht geladen. Größen-, Zeit- und Mengengrenzen; Ratenbegrenzung pro Adresse '
+            . '(Einstellungen → Tools). Die Auswertung selbst geschieht im Browser.',
+        'auth' => 'public',
+        'params' => [
+            ['in' => 'body', 'name' => 'url', 'type' => 'string', 'required' => true, 'description' => 'HTTPS-Adresse der Seite.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{url, finalUrl, title, html, stylesheets: [{url, css}], skipped: [{url, reason}]}` — `html` ohne Skripte und Eventhandler.'],
+            ['status' => 403, 'description' => 'Studio oder Analyse abgeschaltet (`code: disabled`).'],
+            ['status' => 413, 'description' => 'Seite zu groß (`code: too_large`).'],
+            ['status' => 422, 'description' => '`code: invalid_url`, `blocked_host`, `redirect` (mit `location`) oder `not_html`.'],
+            ['status' => 429, 'description' => 'Zu viele Analysen (`code: rate_limited`).'],
+            ['status' => 502, 'description' => 'Seite nicht ladbar (`code: fetch_failed`).'],
+            ['status' => 504, 'description' => 'Zeitüberschreitung (`code: timeout`).'],
         ],
     ],
 ];

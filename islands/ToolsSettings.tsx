@@ -1,14 +1,8 @@
 import { useEffect, useState } from "react";
-import { Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
-import { apiFetch } from "@tracht-digital-solutions/tds-shared/api";
-
-interface Masked {
-  key: string;
-  secret: boolean;
-  configured?: boolean;
-  last4?: string | null;
-  value?: string;
-}
+import { Alert, ConfirmDialog, Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
+import { sendJson } from "@tracht-digital-solutions/tds-shared/api";
+import { SecretField, usePairing, useRuntimeSettings } from "@tracht-digital-solutions/tds-shared/admin";
+import { centsToEuroInput, parseEuros } from "@tracht-digital-solutions/tds-shared/format";
 
 interface Connection {
   origin?: string;
@@ -17,8 +11,6 @@ interface Connection {
   last_seen_at?: string | null;
 }
 
-const api = apiFetch;
-const NS = "/admin/settings/tools";
 
 /**
  * Designsystem-Studio export formats, in the order the studio lists them. Must
@@ -36,14 +28,6 @@ export const STUDIO_FORMATS: Array<[string, string]> = [
 ];
 const STUDIO_DEFAULT_PREMIUM = "scss,tailwind,bootstrap,zip";
 
-/** Euros as typed ("9,90") → whole cents; null for anything that is not a price. */
-export function eurosToCents(input: string): number | null {
-  const v = input.trim().replace(/\s/g, "").replace(",", ".");
-  if (!/^\d+(\.\d{1,2})?$/.test(v)) return null;
-  const [whole, frac = ""] = v.split(".");
-  return Number(whole) * 100 + Number(frac.padEnd(2, "0"));
-}
-
 /**
  * Tools settings — one-click API connection, AdSense and the Stripe premium
  * layer. Runtime credentials for the public site are managed by pairing, never
@@ -57,28 +41,28 @@ export function eurosToCents(input: string): number | null {
  * (2026-08-14) and IMAP (2026-08-15) already paid for twice.
  */
 export default function ToolsSettings() {
-  const [loaded, setLoaded] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
+  const settings = useRuntimeSettings("tools");
+  const pairing = usePairing({
+    base: "/admin/tools",
+    profile: "tools",
+    subject: "Die Tools-Site",
+    ambiguousHint: "Bitte eine reine HTTPS-Adresse ohne Pfad eingeben.",
+  });
+  const connection = pairing.connection as Connection | null;
   const [adsEnabled, setAdsEnabled] = useState(false);
   const [publisherId, setPublisherId] = useState("");
   const [slotCatalog, setSlotCatalog] = useState("");
   const [slotTool, setSlotTool] = useState("");
-  const [connection, setConnection] = useState<Connection | null>(null);
   const [origin, setOrigin] = useState("");
-  const [connectionLoaded, setConnectionLoaded] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
-  const [installUrl, setInstallUrl] = useState<string | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const [currency, setCurrency] = useState("EUR");
   const [successUrl, setSuccessUrl] = useState("");
   const [cancelUrl, setCancelUrl] = useState("");
   const [stripeKey, setStripeKey] = useState("");
-  const [stripeKeyState, setStripeKeyState] = useState<Masked | null>(null);
   const [stripeHook, setStripeHook] = useState("");
-  const [stripeHookState, setStripeHookState] = useState<Masked | null>(null);
 
   const [studioPremium, setStudioPremium] = useState<Set<string>>(new Set(STUDIO_DEFAULT_PREMIUM.split(",")));
   const [studioPrice, setStudioPrice] = useState("9,00");
@@ -87,69 +71,31 @@ export default function ToolsSettings() {
   const [studioPerHour, setStudioPerHour] = useState("20");
   const [studioSheets, setStudioSheets] = useState("12");
 
-  const load = async () => {
-    // apiFetch rejects when the request never reaches the API; uncaught, this
-    // section stayed on its spinner for good.
-    const res = await api(NS).catch(() => null);
-    if (res === null) {
-      setStatus("Einstellungen konnten nicht geladen werden — die API ist nicht erreichbar.");
-      setLoaded(true);
-      return;
-    }
-    if (!res.ok) {
-      setStatus(res.status === 401 || res.status === 403 ? "Nur für Administratoren." : `Fehler (HTTP ${res.status}).`);
-      setLoaded(true);
-      return;
-    }
-    const d = await res.json();
-    const map = new Map<string, Masked>((d.settings ?? []).map((s: Masked) => [s.key, s]));
-    setAdsEnabled((map.get("ads_enabled")?.value || "0") === "1");
-    setPublisherId(map.get("adsense_publisher_id")?.value || "");
-    setSlotCatalog(map.get("adsense_slot_catalog")?.value || "");
-    setSlotTool(map.get("adsense_slot_tool")?.value || "");
-    setCurrency(map.get("currency")?.value || "EUR");
-    setSuccessUrl(map.get("checkout_success_url")?.value || "");
-    setCancelUrl(map.get("checkout_cancel_url")?.value || "");
-    setStripeKeyState(map.get("stripe_secret_key") ?? null);
-    setStripeHookState(map.get("stripe_webhook_secret") ?? null);
-    const premium = map.get("studio_premium_formats")?.value ?? STUDIO_DEFAULT_PREMIUM;
+  useEffect(() => {
+    const v = settings.value;
+    setAdsEnabled(v("ads_enabled", "0") === "1");
+    setPublisherId(v("adsense_publisher_id"));
+    setSlotCatalog(v("adsense_slot_catalog"));
+    setSlotTool(v("adsense_slot_tool"));
+    setCurrency(v("currency", "EUR"));
+    setSuccessUrl(v("checkout_success_url"));
+    setCancelUrl(v("checkout_cancel_url"));
+    const premium = settings.get("studio_premium_formats")?.value ?? STUDIO_DEFAULT_PREMIUM;
     setStudioPremium(new Set(premium.split(",").map((f) => f.trim()).filter(Boolean)));
-    const cents = Number(map.get("studio_price_cents")?.value || "900");
-    setStudioPrice((Number.isFinite(cents) ? cents / 100 : 9).toFixed(2).replace(".", ","));
-    setStudioLimit(map.get("studio_project_limit")?.value || "50");
-    setStudioAnalysis((map.get("studio_analysis_enabled")?.value || "1") === "1");
-    setStudioPerHour(map.get("studio_analysis_per_hour")?.value || "20");
-    setStudioSheets(map.get("studio_analysis_max_stylesheets")?.value || "12");
-    setLoaded(true);
-  };
-
-  const loadConnection = async () => {
-    try {
-      const res = await api("/admin/tools/connection");
-      if (res.status === 404) {
-        setConnection(null);
-      } else if (res.ok) {
-        const body = await res.json();
-        const next = (body.connection ?? body) as Connection;
-        setConnection(next);
-        setOrigin(next.origin ?? "");
-      } else {
-        setConnectionStatus(`Verbindungsstatus konnte nicht geladen werden (HTTP ${res.status}).`);
-      }
-    } catch {
-      setConnectionStatus("Verbindungsstatus konnte nicht geladen werden (Netzwerkfehler).");
-    } finally {
-      setConnectionLoaded(true);
-    }
-  };
+    const cents = Number(v("studio_price_cents", "900"));
+    setStudioPrice(centsToEuroInput(Number.isFinite(cents) ? cents : 900));
+    setStudioLimit(v("studio_project_limit", "50"));
+    setStudioAnalysis(v("studio_analysis_enabled", "1") === "1");
+    setStudioPerHour(v("studio_analysis_per_hour", "20"));
+    setStudioSheets(v("studio_analysis_max_stylesheets", "12"));
+  }, [settings.settings]);
 
   useEffect(() => {
-    void load();
-    void loadConnection();
-  }, []);
+    if (connection?.origin) setOrigin(connection.origin);
+  }, [connection?.origin]);
 
   const save = async () => {
-    const cents = eurosToCents(studioPrice);
+    const cents = parseEuros(studioPrice);
     if (cents === null) {
       toast.danger("Bitte einen gültigen Preis für das Designsystem-Studio eingeben (z. B. 9,00).");
       return;
@@ -158,44 +104,33 @@ export default function ToolsSettings() {
       const n = Math.round(Number(v));
       return String(Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback);
     };
-    setBusy(true);
-    setStatus(null);
-    const settings: Masked[] = [
-      { key: "ads_enabled", secret: false, value: adsEnabled ? "1" : "0" },
-      { key: "adsense_publisher_id", secret: false, value: publisherId.trim() },
-      { key: "adsense_slot_catalog", secret: false, value: slotCatalog.trim() },
-      { key: "adsense_slot_tool", secret: false, value: slotTool.trim() },
-      { key: "currency", secret: false, value: currency.trim().toUpperCase() || "EUR" },
-      { key: "checkout_success_url", secret: false, value: successUrl.trim() },
-      { key: "checkout_cancel_url", secret: false, value: cancelUrl.trim() },
-      { key: "stripe_secret_key", secret: true, value: stripeKey.trim() },
-      { key: "stripe_webhook_secret", secret: true, value: stripeHook.trim() },
-      { key: "studio_premium_formats", secret: false, value: STUDIO_FORMATS.map(([f]) => f).filter((f) => studioPremium.has(f)).join(",") },
-      { key: "studio_price_cents", secret: false, value: String(cents) },
-      { key: "studio_project_limit", secret: false, value: whole(studioLimit, 1, 1000, 50) },
-      { key: "studio_analysis_enabled", secret: false, value: studioAnalysis ? "1" : "0" },
-      { key: "studio_analysis_per_hour", secret: false, value: whole(studioPerHour, 1, 1000, 20) },
-      { key: "studio_analysis_max_stylesheets", secret: false, value: whole(studioSheets, 1, 30, 12) },
-    ];
-    const res = await api(NS, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ settings }),
-    }).catch(() => null);
-    if (res === null) {
-      // The typed secrets stay in their fields for another attempt.
-      toast.danger("Speichern fehlgeschlagen — die API ist nicht erreichbar.");
-      setBusy(false);
-      return;
-    }
-    if (res.ok) {
+    setSaving(true);
+    // No success toast from the hook: the one below also reports the cache refresh.
+    const saved = await settings.save(
+      [
+        { key: "ads_enabled", value: adsEnabled ? "1" : "0" },
+        { key: "adsense_publisher_id", value: publisherId.trim() },
+        { key: "adsense_slot_catalog", value: slotCatalog.trim() },
+        { key: "adsense_slot_tool", value: slotTool.trim() },
+        { key: "currency", value: currency.trim().toUpperCase() || "EUR" },
+        { key: "checkout_success_url", value: successUrl.trim() },
+        { key: "checkout_cancel_url", value: cancelUrl.trim() },
+        { key: "stripe_secret_key", secret: true, value: stripeKey.trim() },
+        { key: "stripe_webhook_secret", secret: true, value: stripeHook.trim() },
+        { key: "studio_premium_formats", value: STUDIO_FORMATS.map(([f]) => f).filter((f) => studioPremium.has(f)).join(",") },
+        { key: "studio_price_cents", value: String(cents) },
+        { key: "studio_project_limit", value: whole(studioLimit, 1, 1000, 50) },
+        { key: "studio_analysis_enabled", value: studioAnalysis ? "1" : "0" },
+        { key: "studio_analysis_per_hour", value: whole(studioPerHour, 1, 1000, 20) },
+        { key: "studio_analysis_max_stylesheets", value: whole(studioSheets, 1, 30, 12) },
+      ],
+      null,
+    );
+    if (saved) {
+      // The typed secrets stay in their fields after a failure, for another attempt.
       setStripeKey("");
       setStripeHook("");
-      const cacheRes = await api("/admin/tools/cache/rebuild", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ event: "settings" }),
-      }).catch(() => null);
+      const cacheRes = await sendJson("/admin/tools/cache/rebuild", "POST", { event: "settings" }).catch(() => null);
       const cacheBody = cacheRes === null ? {} : await cacheRes.json().catch(() => ({}));
       if (cacheRes === null) {
         // The settings are stored; only the follow-up refresh was lost.
@@ -207,72 +142,18 @@ export default function ToolsSettings() {
       } else {
         toast.warning(`Gespeichert — Cache-Aktualisierung fehlgeschlagen (HTTP ${cacheRes.status}).`);
       }
-      void load();
-    } else {
-      toast.danger(`Speichern fehlgeschlagen (HTTP ${res.status}).`);
     }
-    setBusy(false);
-  };
-
-  const connect = async () => {
-    setConnecting(true);
-    setConnectionStatus(null);
-    setInstallUrl(null);
-    try {
-      const res = await api("/admin/tools/connection/pairing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ origin: origin.trim(), profile: "tools" }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // The API names the cause (a missing SETTINGS_ENCRYPTION_KEY, a server
-        // fault) — for an operator without log access, the only diagnosis.
-        const reason = typeof body.error === "string" && body.error.trim() !== "" ? body.error.trim() : null;
-        setConnectionStatus(res.status === 422
-          ? (reason ?? "Bitte eine reine HTTPS-Adresse ohne Pfad eingeben.")
-          : `Verbinden fehlgeschlagen (HTTP ${res.status})${reason ? `: ${reason}` : "."}`);
-        return;
-      }
-      setInstallUrl(body.fallback_url ?? body.install_url ?? null);
-      if (body.delivered === true || body.connected === true) {
-        toast.success("Tools-Site mit der API verbunden.");
-        await loadConnection();
-      } else {
-        // `error` is why the hand-over failed — "HTTP 422: invalid_origin" is
-        // the site's own refusal, which otherwise only its log would show.
-        const why = typeof body.error === "string" && body.error.trim() !== "" ? ` (${body.error.trim()})` : "";
-        setConnectionStatus(`Die Tools-Site hat die Verbindung nicht direkt angenommen${why}. Öffnen Sie den Einrichtungslink auf dem Site-Server.`);
-      }
-    } catch {
-      setConnectionStatus("Verbinden fehlgeschlagen (Netzwerkfehler).");
-    } finally {
-      setConnecting(false);
-    }
+    setSaving(false);
   };
 
   const disconnect = async () => {
-    let res: Response;
-    try {
-      res = await api("/admin/tools/connection", { method: "DELETE" });
-    } catch {
-      // apiFetch rejects when the request never reaches the API; uncaught, the
-      // click did nothing and said nothing.
-      toast.danger("Trennen fehlgeschlagen (Netzwerkfehler).");
-      return;
-    }
-    if (res.ok) {
-      setConnection(null);
-      setInstallUrl(null);
-      toast.success("Verbindung getrennt.");
-    } else {
-      toast.danger(`Trennen fehlgeschlagen (HTTP ${res.status}).`);
-    }
+    setDisconnecting(true);
+    await pairing.disconnect();
+    setDisconnecting(false);
+    setConfirmDisconnect(false);
   };
 
-  const hint = (s: Masked | null) => (s?.configured ? `konfiguriert (…${s.last4 ?? "????"})` : "nicht konfiguriert");
-
-  if (!loaded) return <p><Spinner /></p>;
+  if (!settings.loaded) return <p><Spinner /></p>;
 
   return (
     <div className="tools-settings space-y-5">
@@ -308,17 +189,26 @@ export default function ToolsSettings() {
           <span className="text-sm">Basis-URL der Tools-Site</span>
           <input className="field-boxed" type="url" value={origin} onChange={(e) => setOrigin(e.target.value)} placeholder="https://tools.tracht-digital.de" />
         </label>
-        {!connectionLoaded ? <p><Spinner size="sm" /> Verbindungsstatus wird geladen …</p> : connection ? (
-          <p className="tds-alert tds-alert--success" role="status">Verbunden mit {connection.origin ?? origin}</p>
-        ) : <p className="tds-alert" role="status">Noch nicht mit der API verbunden.</p>}
-        {connectionStatus ? <p className="tds-alert tds-alert--danger" role="alert">{connectionStatus}</p> : null}
-        {installUrl ? <p><a className="btn btn-ghost" href={installUrl}>Einrichtungslink öffnen</a></p> : null}
+        {pairing.loading ? <p><Spinner size="sm" /> Verbindungsstatus wird geladen …</p> : connection ? (
+          <Alert tone="success">Verbunden mit {connection.origin ?? origin}</Alert>
+        ) : <Alert tone="neutral">Noch nicht mit der API verbunden.</Alert>}
+        <Alert>{pairing.status}</Alert>
+        {pairing.installUrl ? <p><a className="btn btn-ghost" href={pairing.installUrl}>Einrichtungslink öffnen</a></p> : null}
         <div className="tds-toolbar">
-          <button type="button" className="btn btn-primary" onClick={connect} disabled={connecting || origin.trim() === ""}>
-            {connecting ? <Spinner size="sm" /> : connection ? "Neu verbinden" : "Mit API verbinden"}
+          <button type="button" className="btn btn-primary" onClick={() => void pairing.connect(origin)} disabled={pairing.connecting || origin.trim() === ""}>
+            {pairing.connecting ? <Spinner size="sm" /> : connection ? "Neu verbinden" : "Mit API verbinden"}
           </button>
-          {connection ? <button type="button" className="btn btn-ghost" onClick={disconnect}>Verbindung trennen</button> : null}
+          {connection ? <button type="button" className="btn btn-ghost" onClick={() => setConfirmDisconnect(true)}>Verbindung trennen</button> : null}
         </div>
+        <ConfirmDialog
+          open={confirmDisconnect}
+          title="Verbindung trennen?"
+          message="Die Tools-Site verliert ihren API-Zugang, bis sie neu verbunden wird."
+          confirmLabel="Trennen"
+          busy={disconnecting}
+          onConfirm={() => void disconnect()}
+          onCancel={() => setConfirmDisconnect(false)}
+        />
       </fieldset>
 
       <fieldset className="space-y-3">
@@ -329,14 +219,8 @@ export default function ToolsSettings() {
           Kauf frei — ohne sein Secret bleibt jede Zahlung ohne Freischaltung.
         </p>
         <p className="text-sm opacity-70">Nur nötig, wenn dieses Modul ein eigenes Stripe-Konto nutzen soll. Ohne eigenen Schlüssel gilt das zentrale Konto unter Einstellungen → Zahlungen (Stripe); dort stehen auch alle Webhook-Adressen.</p>
-        <label className="block">
-          <span className="text-sm">Secret Key, optional <em className="opacity-60">({hint(stripeKeyState)})</em></span>
-          <input className="field-boxed" type="password" value={stripeKey} onChange={(e) => setStripeKey(e.target.value)} placeholder="sk_… (leer = behalten)" autoComplete="off" />
-        </label>
-        <label className="block">
-          <span className="text-sm">Webhook Secret <em className="opacity-60">({hint(stripeHookState)})</em></span>
-          <input className="field-boxed" type="password" value={stripeHook} onChange={(e) => setStripeHook(e.target.value)} placeholder="whsec_… (leer = behalten)" autoComplete="off" />
-        </label>
+        <SecretField label="Secret Key, optional" setting={settings.get("stripe_secret_key")} value={stripeKey} onChange={setStripeKey} placeholder="sk_… (leer = behalten)" />
+        <SecretField label="Webhook Secret" setting={settings.get("stripe_webhook_secret")} value={stripeHook} onChange={setStripeHook} placeholder="whsec_… (leer = behalten)" />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label className="block">
             <span className="text-sm">Währung</span>
@@ -409,8 +293,8 @@ export default function ToolsSettings() {
 
       {/* The load failure is persistent state and stays in-flow; the save
           outcome is a toast. Failures only, hence the danger hue. */}
-      {status ? <p className="tds-alert tds-alert--danger" role="alert">{status}</p> : null}
-      <button type="button" className="btn btn-primary" onClick={save} disabled={busy} aria-busy={busy}>Speichern</button>
+      <Alert>{settings.error}</Alert>
+      <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={saving} aria-busy={saving}>Speichern</button>
     </div>
   );
 }

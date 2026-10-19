@@ -5,7 +5,8 @@ import userEvent from "@testing-library/user-event";
 import { primeRuntimeConfig } from "@tracht-digital-solutions/tds-shared/api";
 import { TOAST_EVENT } from "@tracht-digital-solutions/tds-shared/toast";
 import { readFileSync } from "node:fs";
-import ToolsSettings, { eurosToCents, STUDIO_FORMATS } from "./ToolsSettings";
+import { parseEuros } from "@tracht-digital-solutions/tds-shared/format";
+import ToolsSettings, { STUDIO_FORMATS } from "./ToolsSettings";
 
 type Reply = { status: number; body: unknown };
 type Call = { url: string; method: string; body: unknown };
@@ -305,7 +306,7 @@ describe("pairing", () => {
     await u.type(box("Basis-URL der Tools-Site"), "https://tools.example");
     await u.click(screen.getByRole("button", { name: "Mit API verbinden" }));
     expect(await screen.findByText(
-      "Die Tools-Site hat die Verbindung nicht direkt angenommen (HTTP 422: invalid_origin). Öffnen Sie den Einrichtungslink auf dem Site-Server.",
+      "Die Tools-Site hat die Verbindung nicht direkt angenommen (HTTP 422: invalid_origin). Öffnen Sie den Einrichtungslink auf dem Server.",
     )).toBeTruthy();
   });
 
@@ -316,6 +317,8 @@ describe("pairing", () => {
     };
     const u = await open();
     await u.click(screen.getByRole("button", { name: "Verbindung trennen" }));
+    // A disconnect is confirmed first (tds-shared ConfirmDialog).
+    await u.click(await screen.findByRole("button", { name: "Trennen" }));
     await waitFor(() => expect(findCall(CONNECTION, "DELETE")).toBeDefined());
     expect(await screen.findByText("Noch nicht mit der API verbunden.")).toBeTruthy();
   });
@@ -328,7 +331,8 @@ describe("pairing", () => {
     connectionDelete = UNREACHABLE;
     const u = await open();
     await u.click(await screen.findByRole("button", { name: "Verbindung trennen" }));
-    await waitFor(() => expect(toasts.some((toast) => toast.variant === "danger" && toast.message.includes("Netzwerkfehler"))).toBe(true));
+    await u.click(await screen.findByRole("button", { name: "Trennen" }));
+    await waitFor(() => expect(toasts.some((toast) => toast.variant === "danger" && toast.message.includes("die API ist nicht erreichbar"))).toBe(true));
     expect(screen.getByText("Verbunden mit https://tools.example")).toBeTruthy();
   });
 });
@@ -385,11 +389,11 @@ describe("Designsystem-Studio settings", () => {
   });
 
   it("converts euros to cents without float drift", () => {
-    expect(eurosToCents("9,90")).toBe(990);
-    expect(eurosToCents("1.005")).toBeNull();
-    expect(eurosToCents("0,1")).toBe(10);
-    expect(eurosToCents("12")).toBe(1200);
-    expect(eurosToCents("-1")).toBeNull();
+    expect(parseEuros("9,90")).toBe(990);
+    expect(parseEuros("1.005")).toBeNull();
+    expect(parseEuros("0,1")).toBe(10);
+    expect(parseEuros("12")).toBe(1200);
+    expect(parseEuros("-1")).toBeNull();
     expect(STUDIO_FORMATS.map(([f]) => f)).toEqual(["css", "variables", "html", "scss", "json", "tailwind", "bootstrap", "zip"]);
   });
 });

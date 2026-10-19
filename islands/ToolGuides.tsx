@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
-import { Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
+import { Alert, ConfirmDialog, Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
 import { apiFetch } from "@tracht-digital-solutions/tds-shared/api";
 import { Collapse, Presence } from "@tracht-digital-solutions/tds-shared/motion/react";
-
-const api = apiFetch;
 
 type Lang = "de" | "en";
 
@@ -93,8 +91,8 @@ export default function ToolGuides() {
     // apiFetch rejects when a request never reaches the API; uncaught, the
     // page stayed on its spinner for good.
     const both = await Promise.all([
-      api("/admin/tools"),
-      api("/admin/tools/guides"),
+      apiFetch("/admin/tools"),
+      apiFetch("/admin/tools/guides"),
     ]).catch(() => null);
     if (both === null) {
       setError("Tools konnten nicht geladen werden — die API ist nicht erreichbar.");
@@ -152,7 +150,7 @@ export default function ToolGuides() {
   const save = async () => {
     if (!toolId) return;
     setBusy(true);
-    const res = await api(`/admin/tools/guides/${encodeURIComponent(toolId)}/${lang}`, {
+    const res = await apiFetch(`/admin/tools/guides/${encodeURIComponent(toolId)}/${lang}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -193,10 +191,12 @@ export default function ToolGuides() {
     }
   };
 
+  const [confirmReset, setConfirmReset] = useState(false);
+
   const reset = async () => {
     if (!toolId) return;
     setBusy(true);
-    const res = await api(`/admin/tools/guides/${encodeURIComponent(toolId)}/${lang}`, {
+    const res = await apiFetch(`/admin/tools/guides/${encodeURIComponent(toolId)}/${lang}`, {
       method: "DELETE",
     }).catch(() => null);
     setBusy(false);
@@ -219,7 +219,7 @@ export default function ToolGuides() {
   };
 
   if (tools === null) return <p><Spinner /></p>;
-  if (error) return <p className="tds-alert tds-alert--danger" role="alert">{error}</p>;
+  if (error) return <Alert>{error}</Alert>;
 
   const hasOverride = stored.some((g) => g.tool_id === toolId && g.lang === lang);
 
@@ -263,9 +263,9 @@ export default function ToolGuides() {
       ) : (
         <>
           <Collapse open={hasOverride}>
-            <p className="tds-alert" role="status">
+            <Alert tone="neutral">
               Für dieses Tool ist in dieser Sprache ein eigener Text hinterlegt.
-            </p>
+            </Alert>
           </Collapse>
 
           <label className="field">
@@ -324,7 +324,7 @@ export default function ToolGuides() {
               Speichern
             </button>
             {hasOverride ? (
-              <button type="button" className="btn btn-ghost" onClick={reset} disabled={busy}>
+              <button type="button" className="btn btn-ghost" onClick={() => setConfirmReset(true)} disabled={busy}>
                 Auf mitgelieferten Text zurücksetzen
               </button>
             ) : null}
@@ -332,6 +332,18 @@ export default function ToolGuides() {
         </>
       )}
       </Presence>
+      <ConfirmDialog
+        open={confirmReset}
+        title="Auf mitgelieferten Text zurücksetzen?"
+        message="Der im Panel geschriebene Ratgeber für diese Sprache wird gelöscht; die Seite zeigt wieder den Text aus dem Tool-Paket."
+        confirmLabel="Zurücksetzen"
+        busy={busy}
+        onConfirm={() => {
+          setConfirmReset(false);
+          void reset();
+        }}
+        onCancel={() => setConfirmReset(false)}
+      />
     </div>
   );
 }

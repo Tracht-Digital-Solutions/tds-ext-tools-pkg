@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
-import { apiFetch } from "@tracht-digital-solutions/tds-shared/api";
+import { Alert, Spinner, toast } from "@tracht-digital-solutions/tds-shared/components";
+import { apiFetch, sendJson } from "@tracht-digital-solutions/tds-shared/api";
 
 interface Tool {
   tool_id: string;
@@ -12,8 +12,6 @@ interface Tool {
   price_cents: number;
   sort_order: number;
 }
-
-const api = apiFetch;
 
 /**
  * Tool-catalog management: one row per tool (enabled / login / premium / price),
@@ -30,7 +28,7 @@ export default function ToolsManage() {
   const load = async () => {
     // apiFetch rejects when the request never reaches the API; uncaught, the
     // table stayed on its spinner for good.
-    const res = await api("/admin/tools").catch(() => null);
+    const res = await apiFetch("/admin/tools").catch(() => null);
     if (res === null) {
       setError("Tools konnten nicht geladen werden — die API ist nicht erreichbar.");
       setTools([]);
@@ -55,17 +53,13 @@ export default function ToolsManage() {
 
   const save = async (tool: Tool) => {
     setBusy(tool.tool_id);
-    const res = await api(`/admin/tools/${encodeURIComponent(tool.tool_id)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    const res = await sendJson(`/admin/tools/${encodeURIComponent(tool.tool_id)}`, "PUT", {
         enabled: tool.enabled,
         requires_login: tool.requires_login,
         is_premium: tool.is_premium,
         price_cents: tool.price_cents,
         sort_order: tool.sort_order,
-      }),
-    }).catch(() => null);
+      }).catch(() => null);
     setBusy(null);
     if (res === null) {
       toast.danger(`„${tool.name}“ konnte nicht gespeichert werden — die API ist nicht erreichbar.`);
@@ -88,7 +82,7 @@ export default function ToolsManage() {
   };
 
   if (tools === null) return <p><Spinner /></p>;
-  if (error) return <p className="tds-alert tds-alert--danger" role="alert">{error}</p>;
+  if (error) return <Alert>{error}</Alert>;
 
   // The catalog table uses `.tds-table` for the header treatment, cell padding,
   // row rules and hover. The hand-rolled utility strings it replaces also

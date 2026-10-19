@@ -229,6 +229,8 @@ describe("ToolGuides", () => {
       render(<ToolGuides />);
       await u.selectOptions(await screen.findByLabelText("Tool"), "pdf");
       await u.click(await screen.findByRole("button", { name: /zurücksetzen/i }));
+      // The reset deletes panel-written text, so it is confirmed first.
+      await u.click(await screen.findByRole("button", { name: "Zurücksetzen" }));
       await waitFor(() => expect(messages.some((m) => m.includes("Zurücksetzen") && m.includes("nicht erreichbar"))).toBe(true));
     });
   });

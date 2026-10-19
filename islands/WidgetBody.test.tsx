@@ -70,7 +70,8 @@ describe("the widget", () => {
 
   it("shows a loading line before the request resolves", () => {
     render(<WidgetBody />);
-    expect(screen.getByLabelText("Wird geladen")).toBeTruthy();
+    // tds-shared SummaryMetric: a skeleton under aria-busy, not a spinner.
+    expect(document.querySelector('[aria-busy="true"]')).toBeTruthy();
   });
 
   it("renders the visible count against the total", async () => {

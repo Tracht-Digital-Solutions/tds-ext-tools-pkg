@@ -32,7 +32,9 @@ final class StudioRoutesTest extends TestCase
         $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $this->pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
         $this->pdo->sqliteCreateFunction('NOW', static fn (): string => gmdate('Y-m-d H:i:s'), 0);
-        $this->pdo->exec('CREATE TABLE tools_config (tool_id TEXT PRIMARY KEY, name TEXT, category TEXT, enabled INTEGER, requires_login INTEGER, is_premium INTEGER, price_cents INTEGER, sort_order INTEGER)');
+        $this->pdo->exec('CREATE TABLE tools_config (tool_id TEXT PRIMARY KEY, name TEXT, category TEXT, enabled INTEGER, requires_login INTEGER, is_premium INTEGER, price_cents INTEGER, sort_order INTEGER, blog_slug TEXT)');
+        $this->pdo->exec('CREATE TABLE tools_tier (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE, name TEXT, name_en TEXT, tagline TEXT, tagline_en TEXT, features TEXT, features_en TEXT, price_cents INTEGER, tool_ids TEXT, active INTEGER DEFAULT 1, highlight INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)');
+        $this->pdo->exec('CREATE TABLE tools_subscription (id INTEGER PRIMARY KEY AUTOINCREMENT, app_user_id INTEGER, tier_id INTEGER, stripe_subscription_id TEXT UNIQUE, stripe_customer_id TEXT, status TEXT, current_period_end TEXT, cancel_at_period_end INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)');
         $this->pdo->exec('CREATE TABLE tools_entitlement (id INTEGER PRIMARY KEY AUTOINCREMENT, app_user_id INTEGER, tool_id TEXT, status TEXT DEFAULT \'active\', source_stripe_id TEXT, expires_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(app_user_id, tool_id))');
         $this->pdo->exec('CREATE TABLE tools_studio_project (id INTEGER PRIMARY KEY AUTOINCREMENT, app_user_id INTEGER NOT NULL, name TEXT NOT NULL, schema_version INTEGER NOT NULL DEFAULT 1, data TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)');
         foreach (['TOOLS_STUDIO_PROJECT_LIMIT', 'TOOLS_STUDIO_ANALYSIS', 'TOOLS_STUDIO_PREMIUM_FORMATS', 'TOOLS_STUDIO_PRICE_CENTS', 'STRIPE_SECRET_KEY'] as $k) {
@@ -181,7 +183,7 @@ final class StudioRoutesTest extends TestCase
         self::assertSame(1490, $body['priceCents']);
 
         // The catalog switch turns the studio off — for access, storage and analysis.
-        $this->pdo->exec("INSERT INTO tools_config VALUES ('design-system-studio', 'Designsystem-Studio', 'design', 0, 0, 0, 0, 0)");
+        $this->pdo->exec("INSERT INTO tools_config (tool_id, name, category, enabled, requires_login, is_premium, price_cents, sort_order) VALUES ('design-system-studio', 'Designsystem-Studio', 'design', 0, 0, 0, 0, 0)");
         $this->entitle();
         self::assertFalse($this->call(new FakeUser(), 'GET', '/tools/studio/access')[1]['enabled']);
         [$status, $body] = $this->call(new FakeUser(auth: true), 'GET', '/tools/studio/projects');
@@ -203,11 +205,22 @@ final class StudioRoutesTest extends TestCase
         self::assertSame('disabled', $body['code']);
     }
 
-    public function testStudioPremiumCanBeBoughtAlthoughTheToolIsFree(): void
+    public function testStudioPremiumIsSoldThroughTheCheapestStageThatHasIt(): void
     {
-        $this->pdo->exec("INSERT INTO tools_config VALUES ('design-system-studio', 'Designsystem-Studio', 'design', 1, 0, 0, 0, 0)");
-        $this->pdo->exec("INSERT INTO tools_config VALUES ('json-formatter', 'JSON', 'developer', 1, 0, 0, 0, 0)");
-        // Not a "free tool" refusal: it reaches the payment step (unconfigured here → 503).
+        $this->pdo->exec("INSERT INTO tools_config (tool_id, name, category, enabled, requires_login, is_premium, price_cents, sort_order) VALUES ('design-system-studio', 'Designsystem-Studio', 'design', 1, 0, 0, 0, 0)");
+        $this->pdo->exec("INSERT INTO tools_config (tool_id, name, category, enabled, requires_login, is_premium, price_cents, sort_order) VALUES ('json-formatter', 'JSON', 'developer', 1, 0, 0, 0, 0)");
+        // Without a stage there is nothing to sell any more.
+        [$status, $body] = $this->call(new FakeUser(auth: true), 'POST', '/tools/checkout', ['tool' => 'design-system-studio']);
+        self::assertSame(400, $status);
+        self::assertSame('no_tier', $body['code']);
+
+        $this->pdo->exec("INSERT INTO tools_tier (slug, name, price_cents, tool_ids, active) VALUES ('plus', 'Plus', 1900, '[\"design-system-studio\",\"pdf-komprimieren\"]', 1)");
+        $this->pdo->exec("INSERT INTO tools_tier (slug, name, price_cents, tool_ids, active) VALUES ('studio', 'Studio', 490, '[\"design-system-studio\"]', 1)");
+        [, $access] = $this->call(new FakeUser(), 'GET', '/tools/studio/access');
+        self::assertSame(490, $access['priceCents'], 'the cheapest stage with the studio sets the price');
+        self::assertSame('month', $access['priceInterval']);
+        self::assertSame('studio', $access['tier']);
+        // It reaches the payment step (unconfigured here → 503).
         self::assertSame(503, $this->call(new FakeUser(auth: true), 'POST', '/tools/checkout', ['tool' => 'design-system-studio'])[0]);
         self::assertSame(400, $this->call(new FakeUser(auth: true), 'POST', '/tools/checkout', ['tool' => 'json-formatter'])[0]);
         $this->entitle();

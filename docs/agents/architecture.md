@@ -12,9 +12,14 @@
 | `GET /admin/tools/guides`, `PUT` / `DELETE /admin/tools/guides/{id}/{lang}` | `tools:manage` | Guide editor |
 | `POST /admin/tools/cache/rebuild` | `tools:manage` | Manual page-cache refresh |
 | `GET` / `DELETE /admin/tools/connection`, `POST /admin/tools/connection/pairing` | `tools:manage` | Site connection and pairing |
-| `GET /tools/entitlement` | signed-in session | Does this user own a premium tool? |
-| `POST /tools/checkout` | signed-in session | Start a Stripe Checkout Session |
-| `POST /tools/stripe-webhook` | Stripe signature | Grant entitlements |
+| `GET /tools/entitlement` | signed-in session | May this user use a premium tool? (one-off purchase or subscription) |
+| `POST /tools/checkout` | signed-in session | Unlock one tool: monthly checkout of the cheapest stage that has it |
+| `GET /tools/tiers` | public | The stages on sale (fixed monthly prices, copy, tools) |
+| `GET /tools/premium/status` | public (session optional) | The visitor's premium state |
+| `POST /tools/subscribe` | signed-in session | Monthly Stripe checkout for a stage |
+| `POST /tools/billing-portal` | signed-in session | Stripe customer portal (cancel, card, invoices) |
+| `GET` / `POST /admin/tools/tiers`, `PUT` / `DELETE /admin/tools/tiers/{id}` | `tools:manage` | Manage the stages |
+| `POST /tools/stripe-webhook` | Stripe signature | Subscriptions (and late one-off payments) |
 | `GET /tools/studio/access` | public (session optional) | Designsystem-Studio: enabled, entitled, format policy, price, limits |
 | `GET`/`POST /tools/studio/projects`, `GET`/`PUT`/`DELETE /tools/studio/projects/{id}` | session + studio entitlement | Saved studio projects (owner-scoped) |
 | `POST /tools/studio/analyze` | public, rate-limited | SSRF-safe fetch of ONE HTTPS page + its stylesheets |
@@ -54,15 +59,35 @@ DB first, env fallback. Secrets are AES-GCM at rest. Admins edit them through th
 - Runtime GitHub rebuild settings (`rebuild_repo`, `rebuild_workflow`, `rebuild_token`) were
   removed by migration `ToolsRemoveGithubRuntime`. Releases are CI-owned.
 
-## Premium
+## Premium (monthly stages since 2026-10-24)
 
-- A tool pack declares only defaults (`premiumDefault`, `priceCentsDefault`); the admin
-  catalog overrides them.
-- `GET /tools/entitlement` and `POST /tools/checkout` require a signed-in user. Admins are
-  always entitled.
+- **Premium is sold as monthly stages** (`tools_tier`): name, fixed monthly price, copy in both
+  languages and the tools a stage unlocks. Admins manage them freely (`ToolsTiers`). The
+  per-tool `price_cents` is no longer sold or edited; `is_premium` still marks a premium tool.
+- **One-off purchases stay valid** (`tools_entitlement`); nothing sells them any more. A
+  pre-switch session that completes later is still granted (`mode=payment` only).
+- **`Service\PremiumAccess` is the one entitlement check**: admin, one-off purchase, or a
+  subscription in `SubscriptionRepository::GRANTING` (active, trialing, past_due) whose stage
+  lists the tool. It fails closed when the new tables are missing.
+- `POST /tools/checkout` stays for the tool gate and the studio: it opens the checkout of the
+  **cheapest active stage** with the tool (400 `no_tier` without one).
+- **Checkout** (`StripeClient::createSubscriptionCheckout`): `mode=subscription`, inline
+  `price_data.recurring.interval=month` (no Stripe product needed), metadata
+  `{module: tools, user_id, tier_id}` on the session AND `subscription_data`. A second running
+  subscription is refused (409 `has_subscription`); changing or cancelling goes through
+  `POST /tools/billing-portal` (the portal must be activated once in Stripe).
+- **The webhook is the only writer of `tools_subscription`** (`Service\SubscriptionEvent`).
+  `checkout.session.completed` creates the row without a status (the first invoice may still
+  fail); `customer.subscription.*` carries status, period end (top level or items, depending on
+  the API version) and cancellation. Events without `module=tools` belong to another module on
+  the shared account and are ignored. Period ends are stored as UTC (`gmdate`) and handed out
+  as ISO 8601 with `Z`; nothing compares them with `NOW()`.
+- A price change applies to new subscriptions; Stripe keeps running ones on their price.
+- A stage with subscriptions cannot be deleted (409); it is paused with `active = 0`.
+- `GET /tools/tiers` is public and NOT a site-key route: prices are public, and keys paired
+  before the route existed would not allow it.
 - `Service\StripeClient` wraps the contract's `StripeApi`; the module's own key is optional
-  (blank = central account). The webhook is declared via `stripeWebhooks()`
-  (`StripeWebhookSource`) and grants rows in `tools_entitlement`.
+  (blank = central account). The webhook is declared via `stripeWebhooks()`.
 
 ## Designsystem-Studio (tool `design-system-studio`, pack `tds-tool-devkit-pkg`)
 
@@ -86,9 +111,10 @@ DB first, env fallback. Secrets are AES-GCM at rest. Admins edit them through th
 
 ## Data model
 
-Tables `tools_config`, `tools_entitlement`, `tools_guide`, `tools_studio_project`.
+Tables `tools_config` (incl. `blog_slug`), `tools_entitlement`, `tools_guide`, `tools_studio_project`,
+`tools_tier`, `tools_subscription`.
 Migrations `ToolsCreateConfig`, `ToolsCreateEntitlement`, `ToolsCreateGuide`,
-`ToolsRemoveGithubRuntime`, `ToolsCreateStudioProject`. Unsigned ids (MySQL 8).
+`ToolsRemoveGithubRuntime`, `ToolsCreateStudioProject`, `ToolsCreatePremiumTiers` (20261024120001). Unsigned ids (MySQL 8).
 
 ## Admin islands
 
@@ -97,9 +123,10 @@ Migrations `ToolsCreateConfig`, `ToolsCreateEntitlement`, `ToolsCreateGuide`,
 Every row decides what the public site shows and charges:
 
 - **`enabled`** is the publish switch.
-- **`price_cents`** is edited in **euros** and stored in **cents**. A 100× slip is a billing
-  bug. `Math.round(euros * 100)` is float maths (`1.005 €` → 100 cents); tests assert the
-  real behaviour.
+- **`blog_slug`** is the Ratgeber article: a select of the blog CMS's published posts
+  (`GET /content/blog`, loaded after the catalog), a slug field when that fails. The repository
+  stores only a valid slug; anything else unlinks.
+- **`price_cents`** is no longer edited (stages carry the prices) but is sent back unchanged.
 - **Nothing is saved until "Speichern".** Checkboxes patch local state only.
 - The PUT does **not** echo `name` / `category` / `tool_id`; those belong to the packs.
 - Per-row outcomes are toasts carrying the tool's name. A shared status banner made saving
@@ -114,6 +141,14 @@ Cross-fades per tool and language (`Presence`), and the "eigener Text hinterlegt
 opens with `Collapse`. Repeatable rows (steps, use cases, FAQ) stay static: they are keyed by
 index, and `AnimatePresence` would fade out the wrong row on removal. Tests wait for the name
 field after choosing tool or language.
+
+### `ToolsTiers` (premium stages)
+
+- Price typed in euros, sent in cents through tds-shared's `parseEuros`: a typo is refused in
+  the form, never rounded into another price.
+- Nothing is sent until "Speichern"; a stage with subscriptions has no enabled delete button,
+  and deleting asks through `ConfirmDialog`.
+- The edit form says that running subscriptions keep their price.
 
 ### Widget
 

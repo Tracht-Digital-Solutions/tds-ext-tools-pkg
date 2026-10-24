@@ -3,8 +3,8 @@
 Backend and admin UI for the **public tools platform**. The public site
 (`tds-tools-frontend`, server-rendered behind a page cache) is a separate repo; the tools
 themselves live in the `tds-tool-*` packs. This extension owns the catalog overrides
-(enabled, login, premium, price), AdSense config, the panel-editable tool guides, the
-registry sync, premium entitlements with Stripe Checkout, and the site's page-cache
+(enabled, login, premium, Ratgeber article), AdSense config, the panel-editable tool guides, the
+registry sync, premium stages sold as monthly Stripe subscriptions, and the site's page-cache
 refresh. It contributes a PHP `Module` to `tds-core-frontend-api` and the management UI
 to the admin product.
 
@@ -29,7 +29,7 @@ composer install && composer test   # phpunit; DB tests need TDS_TEST_DB_DSN
 - Every declared setting needs a field in `islands/ToolsSettings.tsx`.
 - **Bind container entries unconditionally.** Every class reference in `php/src` must resolve (`ClassReferencesTest`).
 - Never declare `/tools/registry`, `/tools/entitlement` or `/tools/checkout` as site-key routes.
-- Prices are edited in euros and stored in cents; nothing is saved until "Speichern".
+- Prices (premium stages) are edited in euros and stored in cents; nothing is saved until "Speichern".
 - Call the API with `apiFetch`. Per-row outcomes are toasts. Never mount a `ToastHost`.
 - Stay in the `0.5.x` line (admin product pins `^0.5.x`).
 

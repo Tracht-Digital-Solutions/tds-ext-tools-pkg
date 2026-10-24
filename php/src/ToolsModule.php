@@ -10,9 +10,14 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
 use Tds\Ext\Tools\Domain\EntitlementRepository;
 use Tds\Ext\Tools\Domain\StudioProjectRepository;
+use Tds\Ext\Tools\Domain\SubscriptionRepository;
+use Tds\Ext\Tools\Domain\TierPayload;
+use Tds\Ext\Tools\Domain\TierRepository;
 use Tds\Ext\Tools\Domain\ToolConfigRepository;
 use Tds\Ext\Tools\Domain\ToolGuideRepository;
+use Tds\Ext\Tools\Service\PremiumAccess;
 use Tds\Ext\Tools\Service\StripeClient;
+use Tds\Ext\Tools\Service\SubscriptionEvent;
 use Tds\Ext\Tools\Studio\CurlTransport;
 use Tds\Ext\Tools\Studio\DnsHostResolver;
 use Tds\Ext\Tools\Studio\FileRateLimiter;
@@ -120,7 +125,15 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
         return [new StripeWebhookDef(
             'Premium-Tools',
             '/tools/stripe-webhook',
-            ['checkout.session.completed', 'checkout.session.async_payment_succeeded'],
+            [
+                'checkout.session.completed',
+                'checkout.session.async_payment_succeeded',
+                // Premium as a monthly subscription (stages): status, renewal
+                // and cancellation arrive on the subscription itself.
+                'customer.subscription.created',
+                'customer.subscription.updated',
+                'customer.subscription.deleted',
+            ],
             self::NS,
             'stripe_webhook_secret',
         )];
@@ -152,6 +165,18 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             ];
         } catch (\Throwable) {
         }
+        try {
+            $items[] = [
+                'id' => 'tools:premium-tiers',
+                'module' => 'tools',
+                'title' => 'Tools: Premium-Stufen',
+                'description' => 'Ohne aktive Stufe gibt es nichts zu abonnieren: Premium-Werkzeuge lassen sich dann nicht freischalten. Für Kündigungen muss in Stripe das Kundenportal aktiviert sein.',
+                'state' => $c->get(TierRepository::class)->active() !== [] ? 'ok' : 'missing',
+                'level' => 'recommended',
+                'href' => '/tools-verwaltung#premium-tiers',
+            ];
+        } catch (\Throwable) {
+        }
         return $items;
     }
 
@@ -175,6 +200,13 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             $c->set(ToolGuideRepository::class, static fn ($c) => new ToolGuideRepository($c->get(PDO::class)));
             $c->set(EntitlementRepository::class, static fn ($c) => new EntitlementRepository($c->get(PDO::class)));
             $c->set(StudioProjectRepository::class, static fn ($c) => new StudioProjectRepository($c->get(PDO::class)));
+            $c->set(TierRepository::class, static fn ($c) => new TierRepository($c->get(PDO::class)));
+            $c->set(SubscriptionRepository::class, static fn ($c) => new SubscriptionRepository($c->get(PDO::class)));
+            $c->set(PremiumAccess::class, static fn ($c) => new PremiumAccess(
+                $c->get(EntitlementRepository::class),
+                $c->get(SubscriptionRepository::class),
+                $c->get(TierRepository::class),
+            ));
             $c->set(PageFetcher::class, static fn ($c) => new PageFetcher(
                 new DnsHostResolver(),
                 new CurlTransport(),
@@ -423,52 +455,199 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             if ($toolId === '') {
                 return self::json($res, ['error' => 'tool query param required'], 422);
             }
-            // Admins can use every premium tool without a purchase.
-            $entitled = $user->isAdmin() || $c->get(EntitlementRepository::class)->isEntitled((int) $user->userId(), $toolId);
+            // Admins, one-off purchases and granting subscriptions (PremiumAccess).
+            $entitled = $c->get(PremiumAccess::class)->isEntitled((int) $user->userId(), $toolId, $user->isAdmin());
             return self::json($res, ['entitled' => $entitled, 'authenticated' => true]);
         });
 
-        // --- Premium: start a Stripe Checkout Session (login required) --------
+        // --- Premium: unlock one tool (login required) ------------------------
+        //
+        // One-off sales ended with the subscriptions (2026-10-24). The route
+        // stays, because the tool gate and the studio call it: it now opens
+        // the monthly checkout of the CHEAPEST stage on sale that unlocks the
+        // tool. Purchases made before keep working (PremiumAccess).
         $app->post('/tools/checkout', function (Request $req, Response $res) use ($c): Response {
             $user = $c->get(UserContext::class);
             if (!$user->isAuthenticated() || $user->userId() === null) {
                 return self::json($res, ['error' => 'Unauthorized'], 401);
             }
-            $body = (array) $req->getParsedBody();
-            $toolId = (string) ($body['tool'] ?? '');
-            $tool = $toolId === '' ? null : $c->get(ToolConfigRepository::class)->find($toolId);
-            if ($toolId === StudioPolicy::TOOL_ID && ($tool === null || !$tool['is_premium'])) {
-                // The studio itself is free; its Premium (saving, premium
-                // exports) is a feature unlock sold under the same tool id.
-                if ($tool !== null && !$tool['enabled']) {
-                    return self::json($res, ['error' => 'Das Tool ist deaktiviert.'], 403);
-                }
-                $tool = ['name' => 'Designsystem-Studio Premium', 'is_premium' => true, 'price_cents' => self::studioPrice($c)];
+            $toolId = trim((string) (((array) $req->getParsedBody())['tool'] ?? ''));
+            if ($toolId === '') {
+                return self::json($res, ['error' => 'Kein Werkzeug angegeben.'], 400);
             }
-            if ($tool === null || !$tool['is_premium'] || $tool['price_cents'] <= 0) {
-                return self::json($res, ['error' => 'Kein kostenpflichtiges Tool.'], 400);
+            $tool = $c->get(ToolConfigRepository::class)->find($toolId);
+            if ($tool !== null && !$tool['enabled']) {
+                return self::json($res, ['error' => 'Das Tool ist deaktiviert.'], 403);
             }
-            if ($c->get(EntitlementRepository::class)->isEntitled((int) $user->userId(), $toolId)) {
+            if ($c->get(PremiumAccess::class)->isEntitled((int) $user->userId(), $toolId, $user->isAdmin())) {
                 return self::json($res, ['error' => 'Bereits freigeschaltet.'], 409);
+            }
+            $tier = self::tierFor($c, $toolId);
+            if ($tier === null) {
+                return self::json($res, ['error' => 'Keine Premium-Stufe enthält dieses Werkzeug.', 'code' => 'no_tier'], 400);
+            }
+            return self::startSubscription($c, $res, $tier);
+        });
+
+        // --- Premium: the stages on sale (public) ------------------------------
+        //
+        // Public on purpose and NOT a site-key route: prices are public
+        // information, the site reads them server-side, and a paired key from
+        // before this route existed would not allow it. Fails soft to [].
+        $app->get('/tools/tiers', function (Request $req, Response $res) use ($c): Response {
+            try {
+                $tiers = array_map(static fn (array $t): array => [
+                    'slug' => $t['slug'],
+                    'name' => $t['name'],
+                    'name_en' => $t['name_en'],
+                    'tagline' => $t['tagline'],
+                    'tagline_en' => $t['tagline_en'],
+                    'features' => $t['features'],
+                    'features_en' => $t['features_en'],
+                    'price_cents' => $t['price_cents'],
+                    'interval' => 'month',
+                    'tool_ids' => $t['tool_ids'],
+                    'highlight' => $t['highlight'],
+                ], $c->get(TierRepository::class)->active());
+            } catch (Throwable) {
+                $tiers = [];
+            }
+            return self::json($res, [
+                'tiers' => $tiers,
+                'currency' => self::setting($c, 'currency', 'TOOLS_CURRENCY', 'EUR'),
+            ]);
+        });
+
+        // --- Premium: the visitor's own state (session optional) --------------
+        $app->get('/tools/premium/status', function (Request $req, Response $res) use ($c): Response {
+            $user = $c->get(UserContext::class);
+            if (!$user->isAuthenticated() || $user->userId() === null) {
+                return self::json($res, ['authenticated' => false, 'admin' => false, 'premium' => false, 'subscriptions' => [], 'tools' => []]);
+            }
+            $status = $c->get(PremiumAccess::class)->status((int) $user->userId());
+            return self::json($res, [
+                'authenticated' => true,
+                'admin' => $user->isAdmin(),
+                // "Has a premium account": an admin, or a subscription Stripe
+                // still counts as paying. One-off purchases unlock their tool
+                // (see /tools/entitlement) but do not make the account premium.
+                'premium' => $user->isAdmin() || $status['subscriptions'] !== [],
+                'subscriptions' => $status['subscriptions'],
+                'tools' => $status['tools'],
+            ]);
+        });
+
+        // --- Premium: subscribe to a stage (login required) -------------------
+        $app->post('/tools/subscribe', function (Request $req, Response $res) use ($c): Response {
+            $user = $c->get(UserContext::class);
+            if (!$user->isAuthenticated() || $user->userId() === null) {
+                return self::json($res, ['error' => 'Bitte anmelden.', 'code' => 'login_required'], 401);
+            }
+            $slug = strtolower(trim((string) (((array) $req->getParsedBody())['tier'] ?? '')));
+            $tier = $slug === '' ? null : $c->get(TierRepository::class)->findBySlug($slug);
+            if ($tier === null || !$tier['active']) {
+                return self::json($res, ['error' => 'Diese Premium-Stufe gibt es nicht.', 'code' => 'unknown_tier'], 404);
+            }
+            return self::startSubscription($c, $res, $tier);
+        });
+
+        // --- Premium: manage / cancel the subscription (login required) -------
+        $app->post('/tools/billing-portal', function (Request $req, Response $res) use ($c): Response {
+            $user = $c->get(UserContext::class);
+            if (!$user->isAuthenticated() || $user->userId() === null) {
+                return self::json($res, ['error' => 'Bitte anmelden.', 'code' => 'login_required'], 401);
+            }
+            $customer = $c->get(SubscriptionRepository::class)->customerFor((int) $user->userId());
+            if ($customer === null) {
+                return self::json($res, ['error' => 'Zu diesem Konto gibt es kein Abo.', 'code' => 'no_subscription'], 404);
             }
             $client = $c->get(StripeClient::class);
             if (!$client->isConfigured()) {
                 return self::json($res, ['error' => 'Zahlung nicht konfiguriert.'], 503);
             }
             try {
-                $session = $client->createCheckoutSession(
-                    (int) $user->userId(),
-                    $toolId,
-                    $tool['name'],
-                    (int) $tool['price_cents'],
-                    self::setting($c, 'currency', 'TOOLS_CURRENCY', 'EUR'),
-                    self::setting($c, 'checkout_success_url', 'TOOLS_CHECKOUT_SUCCESS_URL', 'https://tools.tracht-digital.de/'),
+                $url = $client->createPortalSession(
+                    $customer,
                     self::setting($c, 'checkout_cancel_url', 'TOOLS_CHECKOUT_CANCEL_URL', 'https://tools.tracht-digital.de/'),
                 );
             } catch (StripeException $e) {
                 return self::json($res, ['error' => $e->getMessage()], 502);
             }
-            return self::json($res, ['url' => $session['url']], 201);
+            return $url === null
+                ? self::json($res, ['error' => 'Kein Kundenportal verfügbar.'], 502)
+                : self::json($res, ['url' => $url], 201);
+        });
+
+        // --- Admin: the premium stages -----------------------------------------
+        $app->get('/admin/tools/tiers', function (Request $req, Response $res) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $counts = $c->get(SubscriptionRepository::class)->grantingCountsByTier();
+            $tiers = array_map(
+                static fn (array $t): array => $t + ['subscribers' => $counts[$t['id']] ?? 0],
+                $c->get(TierRepository::class)->all(),
+            );
+            return self::json($res, [
+                'tiers' => $tiers,
+                'currency' => self::setting($c, 'currency', 'TOOLS_CURRENCY', 'EUR'),
+            ]);
+        });
+
+        $app->post('/admin/tools/tiers', function (Request $req, Response $res) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $tier = TierPayload::parse((array) $req->getParsedBody());
+            if (is_string($tier)) {
+                return self::json($res, ['error' => $tier], 422);
+            }
+            $repo = $c->get(TierRepository::class);
+            if ($repo->slugTaken($tier['slug'])) {
+                return self::json($res, ['error' => 'Dieser Kurzname ist schon vergeben.'], 409);
+            }
+            $id = $repo->create($tier);
+            $cache = self::fireCache($c, null, null, 'catalog');
+            return self::json($res, array_merge(['ok' => true, 'tier' => $repo->find($id)], $cache), 201);
+        });
+
+        $app->put('/admin/tools/tiers/{id:[0-9]+}', function (Request $req, Response $res, array $args) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $id = (int) $args['id'];
+            $repo = $c->get(TierRepository::class);
+            if ($repo->find($id) === null) {
+                return self::json($res, ['error' => 'Stufe nicht gefunden.'], 404);
+            }
+            $tier = TierPayload::parse((array) $req->getParsedBody());
+            if (is_string($tier)) {
+                return self::json($res, ['error' => $tier], 422);
+            }
+            if ($repo->slugTaken($tier['slug'], $id)) {
+                return self::json($res, ['error' => 'Dieser Kurzname ist schon vergeben.'], 409);
+            }
+            $repo->update($id, $tier);
+            $cache = self::fireCache($c, null, null, 'catalog');
+            return self::json($res, array_merge(['ok' => true, 'tier' => $repo->find($id)], $cache));
+        });
+
+        $app->delete('/admin/tools/tiers/{id:[0-9]+}', function (Request $req, Response $res, array $args) use ($c): Response {
+            if (($deny = self::requireManage($c->get(UserContext::class), $res)) !== null) {
+                return $deny;
+            }
+            $id = (int) $args['id'];
+            // A stage with subscriptions (even ended ones) stays: their rows
+            // point at it, and a running one still unlocks its tools by it.
+            // It is taken off sale with "aktiv" instead.
+            if ($c->get(SubscriptionRepository::class)->countForTier($id) > 0) {
+                return self::json($res, ['error' => 'Die Stufe hat Abos. Statt zu löschen bitte deaktivieren.', 'code' => 'has_subscriptions'], 409);
+            }
+            if (!$c->get(TierRepository::class)->delete($id)) {
+                return self::json($res, ['error' => 'Stufe nicht gefunden.'], 404);
+            }
+            $cache = self::fireCache($c, null, null, 'catalog');
+            return self::json($res, array_merge(['ok' => true], $cache));
         });
 
         // --- Designsystem-Studio ------------------------------------------------
@@ -587,6 +766,22 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             }
             $event = json_decode($payload, true);
             $type = is_array($event) ? (string) ($event['type'] ?? '') : '';
+            // Subscriptions first: a subscription checkout is also a
+            // `checkout.session.completed`, but it grants nothing by itself —
+            // the row it creates waits for the subscription's own status.
+            $subscription = is_array($event) ? SubscriptionEvent::fromStripe($event) : null;
+            if ($subscription !== null) {
+                $c->get(SubscriptionRepository::class)->upsert(
+                    $subscription['subscriptionId'],
+                    $subscription['userId'],
+                    $subscription['tierId'],
+                    $subscription['customerId'],
+                    $subscription['status'],
+                    $subscription['periodEnd'],
+                    $subscription['cancelAtPeriodEnd'],
+                );
+                return self::json($res, ['received' => true]);
+            }
             // `completed` is not `paid`: a delayed method (SEPA, bank transfer)
             // completes the session `unpaid` and confirms later with
             // `async_payment_succeeded`. The tool used to unlock before the
@@ -594,7 +789,9 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
             $session = is_array($event) ? ($event['data']['object'] ?? []) : [];
             $paid = $type === 'checkout.session.async_payment_succeeded'
                 || ($type === 'checkout.session.completed' && ($session['payment_status'] ?? null) === 'paid');
-            if ($paid) {
+            // One-off purchases: no longer sold, but a session started before
+            // the switch can still complete or confirm a delayed payment.
+            if ($paid && ($session['mode'] ?? 'payment') === 'payment') {
                 $userId = (int) ($session['client_reference_id'] ?? ($session['metadata']['user_id'] ?? 0));
                 $toolId = (string) ($session['metadata']['tool_id'] ?? '');
                 $sessionId = (string) ($session['id'] ?? '');
@@ -622,21 +819,73 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
         $entitled = false;
         if ($authenticated) {
             try {
-                $entitled = $user->isAdmin() || $c->get(EntitlementRepository::class)->isEntitled((int) $user->userId(), StudioPolicy::TOOL_ID);
+                $entitled = $c->get(PremiumAccess::class)->isEntitled((int) $user->userId(), StudioPolicy::TOOL_ID, $user->isAdmin());
             } catch (Throwable) {
                 $entitled = false;
             }
         }
+        $tier = self::tierFor($c, StudioPolicy::TOOL_ID);
         return [
             'enabled' => self::studioEnabled($c),
             'authenticated' => $authenticated,
             'entitled' => $entitled,
             'formats' => StudioPolicy::formats(self::setting($c, 'studio_premium_formats', 'TOOLS_STUDIO_PREMIUM_FORMATS', StudioPolicy::DEFAULT_PREMIUM)),
-            'priceCents' => self::studioPrice($c),
+            // The monthly price of the cheapest stage with the studio; without
+            // one, the legacy one-off setting (no longer sold, kept for display).
+            'priceCents' => $tier !== null ? $tier['price_cents'] : self::studioPrice($c),
+            'priceInterval' => $tier !== null ? 'month' : 'once',
+            'tier' => $tier['slug'] ?? null,
             'currency' => self::setting($c, 'currency', 'TOOLS_CURRENCY', 'EUR'),
             'analysisEnabled' => self::setting($c, 'studio_analysis_enabled', 'TOOLS_STUDIO_ANALYSIS', '1') === '1',
             'projectLimit' => self::studioProjectLimit($c),
         ];
+    }
+
+    /** The cheapest stage on sale that unlocks the tool; null without one or without the tables. */
+    private static function tierFor(ContainerInterface $c, string $toolId): ?array
+    {
+        try {
+            return $c->get(TierRepository::class)->cheapestFor($toolId);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Open the monthly Stripe checkout for a stage. One running subscription
+     * per account: a second one would bill twice, so the visitor is sent to
+     * the customer portal instead (409 `has_subscription`).
+     *
+     * @param array<string,mixed> $tier
+     */
+    private static function startSubscription(ContainerInterface $c, Response $res, array $tier): Response
+    {
+        $user = $c->get(UserContext::class);
+        $userId = (int) $user->userId();
+        $subscriptions = $c->get(SubscriptionRepository::class);
+        if ($subscriptions->grantingFor($userId) !== []) {
+            return self::json($res, ['error' => 'Es läuft schon ein Premium-Abo. Wechsel und Kündigung über die Abo-Verwaltung.', 'code' => 'has_subscription'], 409);
+        }
+        $client = $c->get(StripeClient::class);
+        if (!$client->isConfigured()) {
+            return self::json($res, ['error' => 'Zahlung nicht konfiguriert.'], 503);
+        }
+        try {
+            $session = $client->createSubscriptionCheckout(
+                $userId,
+                (int) $tier['id'],
+                'Online-Tools Premium: ' . $tier['name'],
+                (int) $tier['price_cents'],
+                self::setting($c, 'currency', 'TOOLS_CURRENCY', 'EUR'),
+                $subscriptions->customerFor($userId),
+                $user->email(),
+                self::setting($c, 'checkout_success_url', 'TOOLS_CHECKOUT_SUCCESS_URL', 'https://tools.tracht-digital.de/'),
+                self::setting($c, 'checkout_cancel_url', 'TOOLS_CHECKOUT_CANCEL_URL', 'https://tools.tracht-digital.de/'),
+            );
+        } catch (StripeException $e) {
+            return self::json($res, ['error' => $e->getMessage()], 502);
+        }
+        return self::json($res, ['url' => $session['url']], 201);
     }
 
     /** The catalog switch. No row yet (registry not synced) counts as on. */
@@ -678,7 +927,7 @@ final class ToolsModule extends AbstractModule implements ApiDocSource, SiteKeyP
         if (!self::studioEnabled($c)) {
             return self::json($res, ['error' => 'Das Designsystem-Studio ist deaktiviert.', 'code' => 'disabled'], 403);
         }
-        if (!$user->isAdmin() && !$c->get(EntitlementRepository::class)->isEntitled((int) $user->userId(), StudioPolicy::TOOL_ID)) {
+        if (!$c->get(PremiumAccess::class)->isEntitled((int) $user->userId(), StudioPolicy::TOOL_ID, $user->isAdmin())) {
             return self::json($res, ['error' => 'Speichern ist Premium-Nutzern vorbehalten.', 'code' => 'premium_required'], 403);
         }
         return null;

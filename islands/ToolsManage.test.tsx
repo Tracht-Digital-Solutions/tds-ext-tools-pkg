@@ -10,9 +10,11 @@ import { TOAST_EVENT } from "@tracht-digital-solutions/tds-shared/toast";
  * shows and what it charges for, so the assertions concentrate on:
  *
  *  - **`enabled`** — the switch that publishes a tool to tools.tracht-digital.de;
- *  - **`is_premium` + `price_cents`** — the paywall and its price, held in CENTS
- *    in the payload but edited in EUROS in the input. The conversion is the one
- *    piece of arithmetic here, and getting it wrong by 100× is a billing bug;
+ *  - **`is_premium`** — the paywall flag. Prices live on the premium stages
+ *    now (ToolsTiers); `price_cents` is sent back UNCHANGED so a save never
+ *    zeroes an old value;
+ *  - **`blog_slug`** — the Ratgeber article, chosen from the blog CMS when it
+ *    answers, typed otherwise;
  *  - **nothing is saved until Speichern** — the checkboxes patch local state
  *    only, so an accidental click cannot publish a tool on its own.
  */
@@ -284,70 +286,47 @@ describe("the switches", () => {
   });
 });
 
-describe("the price", () => {
-  it("shows cents as euros with two decimals", async () => {
-    await open([PREMIUM]);
-    await screen.findByText("PDF zusammenfügen");
-    expect((within(row("PDF zusammenfügen")).getByRole("spinbutton") as HTMLInputElement).value).toBe("4.99");
-  });
+describe("the Ratgeber article", () => {
+  const POSTS = { posts: [{ slug: "pdf-verkleinern", title: "PDF verkleinern" }, { slug: "qr-codes", title: "QR-Codes im Alltag" }] };
 
-  it("locks the price field for a free tool", async () => {
-    await open();
-    await screen.findByText("QR-Code-Generator");
-    expect((within(row("QR-Code-Generator")).getByRole("spinbutton") as HTMLInputElement).disabled).toBe(true);
-  });
-
-  it("unlocks it as soon as the tool is marked premium", async () => {
-    const u = await open();
-    await u.click(within(row("QR-Code-Generator")).getByLabelText(/: Premium$/));
-    expect((within(row("QR-Code-Generator")).getByRole("spinbutton") as HTMLInputElement).disabled).toBe(false);
-  });
-
-  it("SENDS the price in cents, not in euros", async () => {
-    // A euro value in `price_cents` would charge 1/100th of the intended price.
+  it("offers the published articles once the catalog is there", async () => {
+    respond(/^\/content\/blog/, POSTS, 200, "GET");
     const u = await open([PREMIUM]);
-    await screen.findByText("PDF zusammenfügen");
-    const price = within(row("PDF zusammenfügen")).getByRole("spinbutton");
-    await u.clear(price);
-    await u.type(price, "9.90");
+    const select = await within(row("PDF zusammenfügen")).findByRole("combobox");
+    await u.selectOptions(select, "pdf-verkleinern");
     await u.click(saveIn("PDF zusammenfügen"));
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect((puts()[0]!.body as { price_cents: number }).price_cents).toBe(990);
+    expect((puts()[0]!.body as { blog_slug: string }).blog_slug).toBe("pdf-verkleinern");
+    // The catalog is read first; the blog never holds the table up.
+    expect(pathOf(calls.filter((c) => !c.url.endsWith("/tds-runtime.json"))[0]!.url)).toBe("/admin/tools");
   });
 
-  it("rounds a sub-cent price instead of truncating it", async () => {
-    // 1.999 € → 199.9 cents → 200, not 199. (Note: `x * 100` is float maths, so
-    // a mid-point like 1.005 lands on 100.4999… and rounds DOWN — an inherent
-    // artefact, not something these tests pretend away.)
-    const u = await open([PREMIUM]);
-    await screen.findByText("PDF zusammenfügen");
-    const price = within(row("PDF zusammenfügen")).getByRole("spinbutton");
-    await u.clear(price);
-    await u.type(price, "1.999");
+  it("keeps a stored article the list does not hold", async () => {
+    respond(/^\/content\/blog/, POSTS, 200, "GET");
+    await open([{ ...PREMIUM, blog_slug: "entwurf" }]);
+    const select = (await within(row("PDF zusammenfügen")).findByRole("combobox")) as HTMLSelectElement;
+    expect(select.value).toBe("entwurf");
+    expect(screen.getByRole("option", { name: "entwurf (nicht veröffentlicht)" })).toBeTruthy();
+  });
+
+  it("falls back to a slug field without the blog CMS and unlinks with an empty one", async () => {
+    respond(/^\/content\/blog/, { error: "Not found" }, 404, "GET");
+    const u = await open([{ ...PREMIUM, blog_slug: "alt" }]);
+    const field = await within(row("PDF zusammenfügen")).findByLabelText("PDF zusammenfügen: Ratgeber-Artikel");
+    expect((field as HTMLInputElement).tagName).toBe("INPUT");
+    await u.clear(field);
     await u.click(saveIn("PDF zusammenfügen"));
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect((puts()[0]!.body as { price_cents: number }).price_cents).toBe(200);
+    expect((puts()[0]!.body as { blog_slug: string }).blog_slug).toBe("");
   });
 
-  it("never lets the price go negative", async () => {
-    // Driven with fireEvent: typing "-" into a `min="0"` number input never
-    // yields a negative value, so `userEvent.type` would not reach the clamp.
-    await open([PREMIUM]);
-    await screen.findByText("PDF zusammenfügen");
-    const price = within(row("PDF zusammenfügen")).getByRole("spinbutton");
-    fireEvent.change(price, { target: { value: "-5" } });
-    fireEvent.click(saveIn("PDF zusammenfügen"));
-    await waitFor(() => expect(puts()).toHaveLength(1));
-    expect((puts()[0]!.body as { price_cents: number }).price_cents).toBe(0);
-  });
-
-  it("treats a cleared price as zero rather than NaN", async () => {
+  it("never touches the old price", async () => {
     const u = await open([PREMIUM]);
     await screen.findByText("PDF zusammenfügen");
-    await u.clear(within(row("PDF zusammenfügen")).getByRole("spinbutton"));
+    expect(within(row("PDF zusammenfügen")).queryByRole("spinbutton")).toBeNull();
     await u.click(saveIn("PDF zusammenfügen"));
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect((puts()[0]!.body as { price_cents: number }).price_cents).toBe(0);
+    expect((puts()[0]!.body as { price_cents: number }).price_cents).toBe(499);
   });
 });
 
@@ -380,6 +359,7 @@ describe("saving a row", () => {
       requires_login: true,
       is_premium: true,
       price_cents: 499,
+      blog_slug: "",
       sort_order: 20,
     });
   });
@@ -481,7 +461,8 @@ describe("saving a row", () => {
     const u = await open();
     await u.click(saveIn("QR-Code-Generator"));
     await waitFor(() => expect(toasts.some((t) => t.variant === "success" && t.message.includes("gespeichert"))).toBe(true));
-    expect(calls.filter((c) => c.method === "GET")).toHaveLength(1);
+    // The blog's article list is a GET of its own; the CATALOG is read once.
+    expect(calls.filter((c) => c.method === "GET" && pathOf(c.url) === "/admin/tools")).toHaveLength(1);
   });
 
   it("names the tool and frees its row when the save never reaches the API", async () => {

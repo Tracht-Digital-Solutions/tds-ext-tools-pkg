@@ -58,7 +58,7 @@ final class ToolConfigRepository
     public function all(): array
     {
         $stmt = $this->pdo->query(
-            'SELECT tool_id, name, category, enabled, requires_login, is_premium, price_cents, sort_order
+            'SELECT tool_id, name, category, enabled, requires_login, is_premium, price_cents, blog_slug, sort_order
              FROM tools_config ORDER BY sort_order ASC, name ASC',
         );
         return array_map([self::class, 'shape'], $stmt->fetchAll());
@@ -68,11 +68,13 @@ final class ToolConfigRepository
      * The public catalog rows the static site merges onto its manifest defaults:
      * only the override flags keyed by tool id.
      *
-     * @return array<int,array{id:string,enabled:bool,requires_login:bool,is_premium:bool,price_cents:int}>
+     * `blog_slug` is the Ratgeber article the tool page links to or shows.
+     *
+     * @return array<int,array{id:string,enabled:bool,requires_login:bool,is_premium:bool,price_cents:int,blog_slug:?string}>
      */
     public function publicCatalog(): array
     {
-        $stmt = $this->pdo->query('SELECT tool_id, enabled, requires_login, is_premium, price_cents FROM tools_config');
+        $stmt = $this->pdo->query('SELECT tool_id, enabled, requires_login, is_premium, price_cents, blog_slug FROM tools_config');
         $out = [];
         foreach ($stmt->fetchAll() as $r) {
             $out[] = [
@@ -81,6 +83,7 @@ final class ToolConfigRepository
                 'requires_login' => (bool) $r['requires_login'],
                 'is_premium' => (bool) $r['is_premium'],
                 'price_cents' => (int) $r['price_cents'],
+                'blog_slug' => self::slugOrNull($r['blog_slug'] ?? null),
             ];
         }
         return $out;
@@ -90,7 +93,7 @@ final class ToolConfigRepository
     public function find(string $toolId): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT tool_id, name, category, enabled, requires_login, is_premium, price_cents, sort_order
+            'SELECT tool_id, name, category, enabled, requires_login, is_premium, price_cents, blog_slug, sort_order
              FROM tools_config WHERE tool_id = :tid',
         );
         $stmt->execute([':tid' => $toolId]);
@@ -115,6 +118,12 @@ final class ToolConfigRepository
             $params[":$key"] = $key === 'price_cents' || $key === 'sort_order'
                 ? max(0, (int) $fields[$key])
                 : ((bool) $fields[$key] ? 1 : 0);
+        }
+        // The Ratgeber article: a blog slug, or empty/null to unlink. Anything
+        // that is not a slug is dropped rather than stored as a broken link.
+        if (array_key_exists('blog_slug', $fields)) {
+            $set[] = 'blog_slug = :blog_slug';
+            $params[':blog_slug'] = self::slugOrNull($fields['blog_slug']);
         }
         if ($set === []) {
             return false;
@@ -151,7 +160,15 @@ final class ToolConfigRepository
             'requires_login' => (bool) $r['requires_login'],
             'is_premium' => (bool) $r['is_premium'],
             'price_cents' => (int) $r['price_cents'],
+            'blog_slug' => self::slugOrNull($r['blog_slug'] ?? null),
             'sort_order' => (int) $r['sort_order'],
         ];
+    }
+
+    /** A blog slug (the blog CMS's own `[a-z0-9-]+`), or null. */
+    private static function slugOrNull(mixed $v): ?string
+    {
+        $s = strtolower(trim((string) ($v ?? '')));
+        return preg_match('/^[a-z0-9](?:[a-z0-9-]{0,158}[a-z0-9])?$/', $s) === 1 ? $s : null;
     }
 }

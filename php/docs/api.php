@@ -125,7 +125,8 @@ return [
             ['in' => 'body', 'name' => 'enabled', 'type' => 'bool', 'description' => 'Tool auf der Seite anzeigen.'],
             ['in' => 'body', 'name' => 'requires_login', 'type' => 'bool', 'description' => 'Nur für angemeldete Nutzer.'],
             ['in' => 'body', 'name' => 'is_premium', 'type' => 'bool', 'description' => 'Kostenpflichtig (setzt `requires_login` voraus).'],
-            ['in' => 'body', 'name' => 'price_cents', 'type' => 'int', 'description' => 'Einmalpreis in Cent.'],
+            ['in' => 'body', 'name' => 'price_cents', 'type' => 'int', 'description' => 'Früherer Einmalpreis in Cent; nicht mehr verkauft (Preise tragen die Premium-Stufen).'],
+            ['in' => 'body', 'name' => 'blog_slug', 'type' => 'string', 'description' => 'Ratgeber-Artikel (Blog-Slug); leer hebt die Verknüpfung auf, ein ungültiger Wert ebenso.'],
         ],
         'responses' => [
             ['status' => 200, 'description' => '`{ok: true, cache_status, cached, rebuilt, skipped, failed, unknownEvents}`.'],
@@ -267,22 +268,157 @@ return [
         'method' => 'POST',
         'pattern' => '/tools/checkout',
         'tag' => 'Premium',
-        'summary' => 'Stripe-Checkout für ein Premium-Tool starten',
-        'description' => 'Preis und Name kommen aus dem Katalog, nie aus der Anfrage — sonst '
-            . 'könnte der Browser seinen eigenen Preis vorgeben. Die Nutzer-Id reist als '
-            . '`client_reference_id` mit, damit der Webhook die Freischaltung zuordnen '
-            . 'kann. Ein Stripe-Fehler wird als 502 durchgereicht.',
+        'summary' => 'Ein Werkzeug freischalten: Monatsabo der günstigsten passenden Stufe',
+        'description' => 'Einzelkäufe werden seit 2026-10-24 nicht mehr verkauft (frühere bleiben gültig). '
+            . 'Die Route öffnet den Stripe-Checkout im Abo-Modus für die günstigste aktive Premium-Stufe, '
+            . 'die das Werkzeug enthält. Preis und Name kommen aus der Stufe, nie aus der Anfrage.',
         'auth' => 'session',
         'params' => [
-            ['in' => 'body', 'name' => 'tool', 'type' => 'string', 'required' => true, 'description' => 'Tool-Id. Muss Premium sein und einen Preis > 0 haben — Ausnahme `design-system-studio`: das Studio ist frei, sein Premium kostet den Preis aus Einstellungen → Tools.'],
+            ['in' => 'body', 'name' => 'tool', 'type' => 'string', 'required' => true, 'description' => 'Tool-Id, z. B. `pdf-komprimieren` oder `design-system-studio`.'],
         ],
         'responses' => [
             ['status' => 201, 'description' => '`{url}` — die Checkout-Seite von Stripe.'],
-            ['status' => 400, 'description' => 'Unbekanntes Tool, nicht Premium, oder Preis 0.'],
+            ['status' => 400, 'description' => 'Kein Werkzeug angegeben, oder keine Stufe enthält es (`code: no_tier`).'],
             ['status' => 401, 'description' => 'Keine Sitzung.'],
-            ['status' => 409, 'description' => 'Bereits freigeschaltet.'],
+            ['status' => 403, 'description' => 'Werkzeug deaktiviert.'],
+            ['status' => 409, 'description' => 'Bereits freigeschaltet, oder es läuft schon ein Abo (`code: has_subscription`).'],
             ['status' => 502, 'description' => 'Stripe hat die Session abgelehnt.'],
             ['status' => 503, 'description' => 'Kein Stripe Secret Key konfiguriert.'],
+        ],
+    ],
+    [
+        'method' => 'GET',
+        'pattern' => '/tools/tiers',
+        'tag' => 'Premium',
+        'summary' => 'Die Premium-Stufen im Verkauf (öffentlich)',
+        'description' => 'Name, Werbetext, Leistungen (DE/EN), fester Monatspreis in Cent und die freigeschalteten '
+            . 'Werkzeuge jeder aktiven Stufe. Bewusst ohne Site-Key: Preise sind öffentlich, und ein vor dieser '
+            . 'Route gekoppelter Schlüssel erlaubt sie nicht. Fällt bei einem DB-Fehler auf eine leere Liste zurück.',
+        'auth' => 'public',
+        'params' => [],
+        'responses' => [
+            ['status' => 200, 'description' => '`{tiers: [{slug, name, name_en, tagline, tagline_en, features, features_en, price_cents, interval, tool_ids, highlight}], currency}`'],
+        ],
+    ],
+    [
+        'method' => 'GET',
+        'pattern' => '/tools/premium/status',
+        'tag' => 'Premium',
+        'summary' => 'Premium-Stand des Besuchers',
+        'description' => '`premium` ist wahr für Admins und bei einem Abo, das Stripe als zahlend führt '
+            . '(active, trialing, past_due). Einzelkäufe schalten ihr Werkzeug frei, machen das Konto aber nicht Premium.',
+        'auth' => 'public',
+        'params' => [],
+        'responses' => [
+            ['status' => 200, 'description' => '`{authenticated, admin, premium, subscriptions: [{tier, name, name_en, status, current_period_end, cancel_at_period_end}], tools}`'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/tools/subscribe',
+        'tag' => 'Premium',
+        'summary' => 'Eine Premium-Stufe monatlich abonnieren',
+        'description' => 'Öffnet den Stripe-Checkout im Abo-Modus (Monatsabrechnung). Nutzer und Stufe reisen in den '
+            . 'Metadaten der Session und des Abos (`module=tools`). Ein Konto hat höchstens ein laufendes Abo.',
+        'auth' => 'session',
+        'params' => [
+            ['in' => 'body', 'name' => 'tier', 'type' => 'string', 'required' => true, 'description' => 'Kurzname der Stufe.'],
+        ],
+        'responses' => [
+            ['status' => 201, 'description' => '`{url}` — die Checkout-Seite von Stripe.'],
+            ['status' => 401, 'description' => 'Keine Sitzung (`code: login_required`).'],
+            ['status' => 404, 'description' => 'Unbekannte oder deaktivierte Stufe.'],
+            ['status' => 409, 'description' => 'Es läuft schon ein Abo (`code: has_subscription`).'],
+            ['status' => 502, 'description' => 'Stripe hat die Session abgelehnt.'],
+            ['status' => 503, 'description' => 'Kein Stripe Secret Key konfiguriert.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/tools/billing-portal',
+        'tag' => 'Premium',
+        'summary' => 'Abo verwalten oder kündigen (Stripe-Kundenportal)',
+        'description' => 'Kündigen, Zahlungsmittel ändern, Rechnungen laden. Das Kundenportal muss in Stripe einmal aktiviert sein.',
+        'auth' => 'session',
+        'params' => [],
+        'responses' => [
+            ['status' => 201, 'description' => '`{url}` — das Kundenportal.'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 404, 'description' => 'Zu diesem Konto gibt es kein Abo (`code: no_subscription`).'],
+            ['status' => 502, 'description' => 'Stripe hat abgelehnt.'],
+            ['status' => 503, 'description' => 'Kein Stripe Secret Key konfiguriert.'],
+        ],
+    ],
+    [
+        'method' => 'GET',
+        'pattern' => '/admin/tools/tiers',
+        'tag' => 'Premium',
+        'summary' => 'Alle Premium-Stufen mit laufenden Abos',
+        'auth' => 'session',
+        'permission' => 'tools:manage',
+        'params' => [],
+        'responses' => [
+            ['status' => 200, 'description' => '`{tiers: [{id, slug, name, …, price_cents, tool_ids, active, highlight, sort_order, subscribers}], currency}`'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Ohne `tools:manage`.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/admin/tools/tiers',
+        'tag' => 'Premium',
+        'summary' => 'Premium-Stufe anlegen',
+        'description' => 'Preis in Cent (0,50 € bis 10.000 €), mindestens ein Werkzeug. Danach wird der Katalog-Cache der Site erneuert.',
+        'auth' => 'session',
+        'permission' => 'tools:manage',
+        'params' => [
+            ['in' => 'body', 'name' => 'name', 'type' => 'string', 'required' => true, 'description' => 'Anzeigename (DE).'],
+            ['in' => 'body', 'name' => 'slug', 'type' => 'string', 'description' => 'Kurzname; leer = aus dem Namen.'],
+            ['in' => 'body', 'name' => 'price_cents', 'type' => 'int', 'required' => true, 'description' => 'Monatspreis in Cent.'],
+            ['in' => 'body', 'name' => 'tool_ids', 'type' => 'string[]', 'required' => true, 'description' => 'Freigeschaltete Werkzeuge.'],
+            ['in' => 'body', 'name' => 'tagline', 'type' => 'string', 'description' => 'Werbetext (DE); `tagline_en`, `name_en`, `features`, `features_en` analog.'],
+            ['in' => 'body', 'name' => 'active', 'type' => 'bool', 'description' => 'Im Verkauf (Standard ja).'],
+            ['in' => 'body', 'name' => 'highlight', 'type' => 'bool', 'description' => 'Als Empfehlung hervorheben.'],
+        ],
+        'responses' => [
+            ['status' => 201, 'description' => '`{ok, tier, …cache}`'],
+            ['status' => 409, 'description' => 'Kurzname vergeben.'],
+            ['status' => 422, 'description' => 'Ungültige Angaben (Meldung im Feld `error`).'],
+        ],
+    ],
+    [
+        'method' => 'PUT',
+        'pattern' => '/admin/tools/tiers/{id:[0-9]+}',
+        'tag' => 'Premium',
+        'summary' => 'Premium-Stufe ändern',
+        'description' => 'Ganze Stufe wie beim Anlegen. Eine Preisänderung gilt für neue Abos; laufende behalten ihren Preis.',
+        'auth' => 'session',
+        'permission' => 'tools:manage',
+        'params' => [
+            ['in' => 'path', 'name' => 'id', 'type' => 'int', 'required' => true, 'description' => 'Stufen-Id.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok, tier, …cache}`'],
+            ['status' => 404, 'description' => 'Stufe nicht gefunden.'],
+            ['status' => 409, 'description' => 'Kurzname vergeben.'],
+            ['status' => 422, 'description' => 'Ungültige Angaben.'],
+        ],
+    ],
+    [
+        'method' => 'DELETE',
+        'pattern' => '/admin/tools/tiers/{id:[0-9]+}',
+        'tag' => 'Premium',
+        'summary' => 'Premium-Stufe löschen',
+        'description' => 'Nur ohne Abos. Eine Stufe mit Abos wird stattdessen deaktiviert.',
+        'auth' => 'session',
+        'permission' => 'tools:manage',
+        'params' => [
+            ['in' => 'path', 'name' => 'id', 'type' => 'int', 'required' => true, 'description' => 'Stufen-Id.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok, …cache}`'],
+            ['status' => 404, 'description' => 'Stufe nicht gefunden.'],
+            ['status' => 409, 'description' => 'Die Stufe hat Abos (`code: has_subscriptions`).'],
         ],
     ],
     [

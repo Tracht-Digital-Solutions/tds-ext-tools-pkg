@@ -10,20 +10,46 @@ interface Tool {
   requires_login: boolean;
   is_premium: boolean;
   price_cents: number;
+  blog_slug: string | null;
   sort_order: number;
 }
 
+interface Article {
+  slug: string;
+  title: string;
+}
+
 /**
- * Tool-catalog management: one row per tool (enabled / login / premium / price),
+ * Tool-catalog management: one row per tool (enabled / login / premium /
+ * Ratgeber article),
  * saved to the backend which refreshes the affected public pages. The tool list
  * is owned by the public site's composed packs. Pairing gives that site a
  * resource-bound key; its server then synchronises the built catalog on first
  * start and whenever the catalog hash changes.
+ *
+ * Prices are no longer set per tool: premium tools are sold as monthly
+ * stages (ToolsTiers). `price_cents` is still sent back unchanged so an old
+ * value is never zeroed by a save.
+ *
+ * The Ratgeber article comes from the blog CMS's public list when that
+ * extension is composed; without it (404, network) the field is a plain
+ * slug input, and the tool page simply links to the blog.
  */
 export default function ToolsManage() {
   const [tools, setTools] = useState<Tool[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [articles, setArticles] = useState<Article[] | null>(null);
+
+  // After the catalog, so the table never waits for the blog. Fails soft to
+  // the free-text field.
+  const loadArticles = async () => {
+    const res = await apiFetch("/content/blog?lang=de&limit=100").catch(() => null);
+    if (res === null || !res.ok) return;
+    const d = await res.json().catch(() => ({}));
+    const posts = Array.isArray(d.posts) ? (d.posts as Article[]) : [];
+    if (posts.length > 0) setArticles(posts.map((p) => ({ slug: String(p.slug), title: String(p.title) })));
+  };
 
   const load = async () => {
     // apiFetch rejects when the request never reaches the API; uncaught, the
@@ -40,8 +66,9 @@ export default function ToolsManage() {
       return;
     }
     const d = await res.json();
-    setTools((d.tools ?? []) as Tool[]);
+    setTools(((d.tools ?? []) as Tool[]).map((t) => ({ ...t, blog_slug: t.blog_slug ?? null })));
     setError(null);
+    void loadArticles();
   };
 
   useEffect(() => {
@@ -58,6 +85,7 @@ export default function ToolsManage() {
         requires_login: tool.requires_login,
         is_premium: tool.is_premium,
         price_cents: tool.price_cents,
+        blog_slug: tool.blog_slug ?? "",
         sort_order: tool.sort_order,
       }).catch(() => null);
     setBusy(null);
@@ -113,7 +141,7 @@ export default function ToolsManage() {
                 <th>Sichtbar</th>
                 <th>Login</th>
                 <th>Premium</th>
-                <th>Preis (€)</th>
+                <th>Ratgeber-Artikel</th>
                 <th></th>
               </tr>
             </thead>
@@ -138,16 +166,33 @@ export default function ToolsManage() {
                     <input type="checkbox" checked={t.is_premium} onChange={(e) => patch(t.tool_id, { is_premium: e.target.checked })} aria-label={`${t.name}: Premium`} />
                   </td>
                   <td>
-                    <input
-                      aria-label={`${t.name}: Preis in Euro`}
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      className="field-boxed w-24"
-                      value={(t.price_cents / 100).toFixed(2)}
-                      onChange={(e) => patch(t.tool_id, { price_cents: Math.max(0, Math.round(Number(e.target.value) * 100)) })}
-                      disabled={!t.is_premium}
-                    />
+                    {articles !== null ? (
+                      <select
+                        aria-label={`${t.name}: Ratgeber-Artikel`}
+                        className="field-boxed"
+                        value={t.blog_slug ?? ""}
+                        onChange={(e) => patch(t.tool_id, { blog_slug: e.target.value || null })}
+                      >
+                        <option value="">— kein Artikel —</option>
+                        {/* A stored slug the list does not hold (unpublished,
+                            renamed) stays visible instead of silently vanishing. */}
+                        {t.blog_slug && !articles.some((a) => a.slug === t.blog_slug) ? (
+                          <option value={t.blog_slug}>{t.blog_slug} (nicht veröffentlicht)</option>
+                        ) : null}
+                        {articles.map((a) => (
+                          <option key={a.slug} value={a.slug}>{a.title}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        aria-label={`${t.name}: Ratgeber-Artikel`}
+                        type="text"
+                        className="field-boxed w-48"
+                        placeholder="artikel-slug"
+                        value={t.blog_slug ?? ""}
+                        onChange={(e) => patch(t.tool_id, { blog_slug: e.target.value.trim().toLowerCase() || null })}
+                      />
+                    )}
                   </td>
                   <td className="text-right">
                     <button type="button" className="btn btn-primary" onClick={() => save(t)} disabled={busy === t.tool_id} aria-busy={busy === t.tool_id}>Speichern</button>

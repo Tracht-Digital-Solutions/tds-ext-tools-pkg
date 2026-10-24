@@ -6,6 +6,7 @@
 // in a nav that already has one for Tools.
 import ToolsManage from "../islands/ToolsManage.tsx";
 import ToolGuides from "../islands/ToolGuides.tsx";
+import ToolsTiers from "../islands/ToolsTiers.tsx";
 ---
 
 <section class="tds-page">
@@ -14,10 +15,21 @@ import ToolGuides from "../islands/ToolGuides.tsx";
   </div>
   <p class="text-sm opacity-70">
     Steuere den öffentlichen Tools-Katalog (tools.tracht-digital.de): sichtbar,
-    Login-Pflicht, Premium und Preis je Tool. Änderungen lösen einen Rebuild der
-    Website aus.
+    Login-Pflicht, Premium und der Ratgeber-Artikel je Tool. Änderungen erneuern
+    den Seiten-Cache der Website.
   </p>
   <ToolsManage client:load />
+
+  <div class="tds-settings-section">
+    <h2 class="tds-page__title">Premium-Stufen</h2>
+    <p class="text-sm opacity-70">
+      Premium wird monatlich abgerechnet. Jede Stufe hat einen festen Monatspreis,
+      einen Werbetext und die Werkzeuge, die sie freischaltet. Die Tools-Site zeigt
+      genau diese Preise. Kündigen können Kundinnen und Kunden selbst über das
+      Stripe-Kundenportal (in Stripe einmal aktivieren). Frühere Einzelkäufe bleiben gültig.
+    </p>
+    <ToolsTiers client:load />
+  </div>
 
   <div class="tds-settings-section">
     <h2 class="tds-page__title">Texte der Tool-Seiten</h2>

@@ -17,6 +17,14 @@ interface Tool {
 interface Article {
   slug: string;
   title: string;
+  /** Published in German / in English (same slug in both languages). */
+  de: boolean;
+  en: boolean;
+}
+
+/** "DE + EN", "nur DE" or "nur EN": which tool pages will show the article. */
+function articleLangs(a: Article): string {
+  return a.de && a.en ? "DE + EN" : a.de ? "nur DE" : "nur EN";
 }
 
 /**
@@ -31,8 +39,10 @@ interface Article {
  * stages (ToolsTiers). `price_cents` is still sent back unchanged so an old
  * value is never zeroed by a save.
  *
- * The Ratgeber article comes from the blog CMS's public list when that
- * extension is composed; without it (404, network) the field is a plain
+ * The Ratgeber article comes from the blog CMS's public lists (German and
+ * English, one slug for both) when that extension is composed; each option
+ * says in which languages it exists, because the English tool page shows the
+ * English version and links to the Ratgeber when there is none; without it (404, network) the field is a plain
  * slug input, and the tool page simply links to the blog.
  */
 export default function ToolsManage() {
@@ -44,11 +54,23 @@ export default function ToolsManage() {
   // After the catalog, so the table never waits for the blog. Fails soft to
   // the free-text field.
   const loadArticles = async () => {
-    const res = await apiFetch("/content/blog?lang=de&limit=100").catch(() => null);
-    if (res === null || !res.ok) return;
-    const d = await res.json().catch(() => ({}));
-    const posts = Array.isArray(d.posts) ? (d.posts as Article[]) : [];
-    if (posts.length > 0) setArticles(posts.map((p) => ({ slug: String(p.slug), title: String(p.title) })));
+    const list = async (lang: "de" | "en"): Promise<{ slug: string; title: string }[] | null> => {
+      const res = await apiFetch(`/content/blog?lang=${lang}&limit=100`).catch(() => null);
+      if (res === null || !res.ok) return null;
+      const d = await res.json().catch(() => ({}));
+      return Array.isArray(d.posts) ? (d.posts as { slug: unknown; title: unknown }[]).map((p) => ({ slug: String(p.slug), title: String(p.title) })) : [];
+    };
+    const [de, en] = await Promise.all([list("de"), list("en")]);
+    if (de === null && en === null) return;
+    // German title first; an English-only article keeps its English title.
+    const merged = new Map<string, Article>();
+    for (const p of de ?? []) merged.set(p.slug, { slug: p.slug, title: p.title, de: true, en: false });
+    for (const p of en ?? []) {
+      const known = merged.get(p.slug);
+      if (known) known.en = true;
+      else merged.set(p.slug, { slug: p.slug, title: p.title, de: false, en: true });
+    }
+    if (merged.size > 0) setArticles([...merged.values()]);
   };
 
   const load = async () => {
@@ -180,7 +202,7 @@ export default function ToolsManage() {
                           <option value={t.blog_slug}>{t.blog_slug} (nicht veröffentlicht)</option>
                         ) : null}
                         {articles.map((a) => (
-                          <option key={a.slug} value={a.slug}>{a.title}</option>
+                          <option key={a.slug} value={a.slug}>{a.title} · {articleLangs(a)}</option>
                         ))}
                       </select>
                     ) : (

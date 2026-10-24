@@ -301,6 +301,16 @@ describe("the Ratgeber article", () => {
     expect(pathOf(calls.filter((c) => !c.url.endsWith("/tds-runtime.json"))[0]!.url)).toBe("/admin/tools");
   });
 
+  it("lists German and English articles and says which languages each has", async () => {
+    respond(/^\/content\/blog\?lang=de/, { posts: [{ slug: "pdf-verkleinern", title: "PDF verkleinern" }, { slug: "nur-de", title: "Nur deutsch" }] }, 200, "GET");
+    respond(/^\/content\/blog\?lang=en/, { posts: [{ slug: "pdf-verkleinern", title: "Shrinking PDFs" }, { slug: "only-en", title: "English only" }] }, 200, "GET");
+    await open([PREMIUM]);
+    await within(row("PDF zusammenfügen")).findByRole("combobox");
+    expect(screen.getByRole("option", { name: "PDF verkleinern · DE + EN" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Nur deutsch · nur DE" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "English only · nur EN" })).toBeTruthy();
+  });
+
   it("keeps a stored article the list does not hold", async () => {
     respond(/^\/content\/blog/, POSTS, 200, "GET");
     await open([{ ...PREMIUM, blog_slug: "entwurf" }]);
